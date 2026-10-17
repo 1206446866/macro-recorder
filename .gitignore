@@ -1,0 +1,97 @@
+
+# ==============================
+# Maven
+# ==============================
+**/target/
+
+# ==============================
+# Windows 打包产物
+# ==============================
+/dist/
+
+# ==============================
+# 个人数据
+# ==============================
+/save/
+/ScreenCapture/
+
+# 本地运行配置（包含个人路径等信息）
+/config.properties
+
+# 不提交散落在其他目录中的个人宏及旧源码备份，保留本地原文件。
+*.mr
+/src.zip
+
+# 本地环境、凭据与个人运行设置
+.env
+.env.*
+!.env.example
+*.local.properties
+.run/
+*.run.xml
+/.codex/
+/.agents/
+*.pem
+*.p12
+*.pfx
+*.key
+id_rsa*
+id_ed25519*
+
+# 日志与诊断数据
+*.log
+MacroRecorder-image-diagnostics/
+*.tmp
+*.temp
+*.bak
+*.hprof
+*.jfr
+*.dmp
+/tmp/
+/temp/
+
+# ==============================
+# IntelliJ IDEA
+# ==============================
+.idea/
+*.iws
+*.iml
+*.ipr
+
+# ==============================
+# Eclipse / STS
+# ==============================
+.apt_generated/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
+# ==============================
+# NetBeans
+# ==============================
+/nbproject/private/
+/nbbuild/
+/nbdist/
+/.nb-gradle/
+
+# ==============================
+# 其他 IDE
+# ==============================
+.vscode/
+
+# ==============================
+# 其他构建产物
+# ==============================
+build/
+!**/src/main/**/build/
+!**/src/test/**/build/
+
+# ==============================
+# 操作系统文件
+# ==============================
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,1117 @@
+package com.macro.ui;
+
+import com.macro.constant.UiConstants;
+
+import com.macro.flow.BranchCondition;
+import com.macro.flow.ImageCheckConfig;
+import com.macro.flow.ImageCheckBehavior;
+import com.macro.flow.MacroBranch;
+import com.macro.flow.MacroFlowFactory;
+import com.macro.flow.MacroNode;
+import com.macro.flow.NodeType;
+import com.macro.model.ActionType;
+import com.macro.model.KeySide;
+import com.macro.model.MacroAction;
+import com.macro.model.MouseButton;
+import com.macro.ui.dialog.AppMessageDialog;
+import com.macro.ui.theme.ThemeManager;
+import com.macro.ui.theme.ThemePalette;
+import com.macro.ui.util.ComponentStyleUtil;
+import com.macro.ui.util.NumericInputUtil;
+
+import javax.imageio.ImageIO;
+import javax.swing.*;
+import javax.swing.border.EmptyBorder;
+import javax.swing.event.DocumentEvent;
+import javax.swing.event.DocumentListener;
+import com.macro.ui.filedialog.FileDialogException;
+import com.macro.ui.filedialog.FileDialogOptions;
+import com.macro.ui.filedialog.FileDialogService;
+import com.macro.ui.filedialog.FileDialogServiceFactory;
+import com.macro.ui.util.DarkButtonUI;
+import java.awt.*;
+import java.awt.event.KeyEvent;
+import java.io.File;
+import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.function.Consumer;
+
+/**
+ * 统一的流程节点编辑器。
+ *
+ * <p>普通输入动作与图像识别节点共用创建、编辑、校验和主题布局，
+ * 图像识别配置不会写入 {@link ActionType} 或 {@link MacroAction}。</p>
+ */
+public final class ActionEditorDialog extends JDialog {
+
+    /** 流程节点编辑器的创建或编辑模式。 */
+    public enum Mode {
+        CREATE,
+        EDIT
+    }
+
+    /** 编辑器可选择的节点类型，图像检查不会写入 ActionType。 */
+    private enum EditorType {
+        MOUSE_MOVE(ActionType.MOUSE_MOVE),
+        MOUSE_PRESS(ActionType.MOUSE_PRESS),
+        MOUSE_RELEASE(ActionType.MOUSE_RELEASE),
+        MOUSE_WHEEL(ActionType.MOUSE_WHEEL),
+        KEY_PRESS(ActionType.KEY_PRESS),
+        KEY_RELEASE(ActionType.KEY_RELEASE),
+        IMAGE_CHECK(null);
+
+        private final ActionType actionType;
+
+        EditorType(ActionType actionType) {
+            this.actionType = actionType;
+        }
+
+        private static EditorType fromNode(MacroNode node) {
+            if (node != null && node.getType() == NodeType.IMAGE_CHECK) {
+                return IMAGE_CHECK;
+            }
+            ActionType type = node == null || node.getAction() == null
+                    ? ActionType.MOUSE_MOVE
+                    : node.getAction().getType();
+            return EditorType.valueOf(type.name());
+        }
+    }
+
+    private static final ThemePalette PALETTE = ThemeManager.getPalette();
+    private static final Font FONT_NORMAL =
+            new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 13);
+    private static final Font FONT_BOLD =
+            new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 14);
+    private static final Font FONT_TITLE =
+            new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 19);
+
+    private final Mode mode;
+    private final FileDialogService fileDialogs;
+
+    /** 编辑模式下的原节点；创建模式下为空。 */
+    private final MacroNode sourceNode;
+
+    /** 将编辑结果交回时间线的回调。 */
+    private final Consumer<MacroNode> onSave;
+
+    /** 编辑模式下的删除回调，参数表示是否保留动作延迟。 */
+    private final Consumer<Boolean> onDelete;
+
+    /** 可切换普通动作与图像识别节点的类型选择框。 */
+    private final JComboBox<EditorType> actionTypeCombo =
+            new JComboBox<>(EditorType.values());
+
+    /** 普通动作延迟，或图像识别成功/失败选择重试时共用的等待时间。 */
+    private final JTextField delayField = new JTextField(12);
+
+    /** 承载当前节点类型对应属性面板的容器。 */
+    private final JPanel propertyHost = new JPanel(new BorderLayout());
+
+    private JLabel subtitleLabel;
+    private JCheckBox preserveDelayCheckBox;
+    private PropertyPanel currentPropertyPanel;
+
+    /**
+     * 创建新增流程节点编辑器。
+     *
+     * @param owner 父窗口
+     * @param onSave 新节点保存回调
+     * @return 新增流程节点编辑器
+     */
+    public static ActionEditorDialog create(
+            Window owner,
+            Consumer<MacroNode> onSave
+    ) {
+        return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null);
+    }
+
+    /** 允许界面回归测试注入文件选择结果，生产入口始终由平台工厂创建服务。 */
+    static ActionEditorDialog create(Window owner, Consumer<MacroNode> onSave, FileDialogService fileDialogs) {
+        return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null, fileDialogs);
+    }
+
+    /**
+     * 创建已有流程节点编辑器。
+     *
+     * @param owner 父窗口
+     * @param node 原流程节点
+     * @param onSave 替换节点回调
+     * @param onDelete 删除节点回调
+     * @return 已有流程节点编辑器
+     */
+    public static ActionEditorDialog edit(
+            Window owner,
+            MacroNode node,
+            Consumer<MacroNode> onSave,
+            Consumer<Boolean> onDelete
+    ) {
+        return new ActionEditorDialog(owner, Mode.EDIT, node, onSave, onDelete);
+    }
+
+    private ActionEditorDialog(
+            Window owner,
+            Mode mode,
+            MacroNode sourceNode,
+            Consumer<MacroNode> onSave,
+            Consumer<Boolean> onDelete
+    ) {
+        this(owner, mode, sourceNode, onSave, onDelete, FileDialogServiceFactory.create());
+    }
+
+    private ActionEditorDialog(Window owner, Mode mode, MacroNode sourceNode,
+            Consumer<MacroNode> onSave, Consumer<Boolean> onDelete, FileDialogService fileDialogs) {
+        super(owner, mode == Mode.CREATE ? "插入动作" : "编辑动作",
+                ModalityType.APPLICATION_MODAL);
+
+        if (onSave == null) {
+            throw new IllegalArgumentException("动作保存回调不能为空");
+        }
+        if (mode == Mode.EDIT && sourceNode == null) {
+            throw new IllegalArgumentException("编辑模式下原动作不能为空");
+        }
+
+        this.mode = mode;
+        this.fileDialogs = java.util.Objects.requireNonNull(fileDialogs);
+        this.sourceNode = sourceNode;
+        this.onSave = onSave;
+        this.onDelete = onDelete;
+
+        configureActionTypeComboBox();
+        delayField.setFont(FONT_NORMAL);
+        ComponentStyleUtil.styleTextField(delayField);
+        NumericInputUtil.installNonNegativeLong(delayField, "延迟（ms）");
+        delayField.setText(String.valueOf(getInitialDelay(sourceNode)));
+        propertyHost.setOpaque(false);
+
+        EditorType initialType = EditorType.fromNode(sourceNode);
+        actionTypeCombo.setSelectedItem(initialType);
+
+        setDefaultCloseOperation(DISPOSE_ON_CLOSE);
+        setContentPane(createContent(initialType));
+        actionTypeCombo.addActionListener(event -> changeActionType(
+                (EditorType) actionTypeCombo.getSelectedItem()
+        ));
+
+        pack();
+        setMinimumSize(new Dimension(720, 380));
+        setSize(720, 380);
+        setResizable(false);
+        setLocationRelativeTo(owner);
+    }
+
+    /** 创建编辑器主体。 */
+    private JPanel createContent(EditorType initialType) {
+        JPanel root = new JPanel(new BorderLayout(0, 16));
+        root.setBackground(PALETTE.background());
+        root.setBorder(new EmptyBorder(18, 20, 16, 20));
+
+        JLabel title = new JLabel(mode == Mode.CREATE ? "插入动作" : "编辑动作");
+        title.setFont(FONT_TITLE);
+        title.setForeground(PALETTE.textPrimary());
+
+        subtitleLabel = new JLabel(getEditorTypeName(initialType));
+        subtitleLabel.setFont(FONT_NORMAL);
+        subtitleLabel.setForeground(PALETTE.accent());
+
+        JPanel heading = new JPanel();
+        heading.setOpaque(false);
+        heading.setLayout(new BoxLayout(heading, BoxLayout.Y_AXIS));
+        heading.add(title);
+        heading.add(Box.createVerticalStrut(6));
+        heading.add(subtitleLabel);
+
+        RoundedPanel formCard = new RoundedPanel(new BorderLayout());
+        formCard.setBorder(new EmptyBorder(14, 14, 14, 14));
+        formCard.add(propertyHost, BorderLayout.CENTER);
+
+        showPropertyPanel(initialType, sourceNode);
+
+        JPanel footer = createFooter();
+        root.add(heading, BorderLayout.NORTH);
+        root.add(formCard, BorderLayout.CENTER);
+        root.add(footer, BorderLayout.SOUTH);
+        return root;
+    }
+
+    /** 创建底部操作区域。 */
+    private JPanel createFooter() {
+        JPanel footer = new JPanel(new BorderLayout(16, 0));
+        footer.setOpaque(false);
+
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0));
+        buttons.setOpaque(false);
+
+        if (mode == Mode.EDIT) {
+            preserveDelayCheckBox = new JCheckBox("删除时保留延迟至下一项");
+            preserveDelayCheckBox.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleCheckBox(preserveDelayCheckBox);
+            footer.add(preserveDelayCheckBox, BorderLayout.WEST);
+
+            JButton deleteButton = createButton("删除动作", false);
+            deleteButton.setForeground(PALETTE.danger());
+            deleteButton.addActionListener(event -> deleteAction());
+            buttons.add(deleteButton);
+        }
+
+        JButton cancelButton = createButton("取消", false);
+        cancelButton.addActionListener(event -> dispose());
+        buttons.add(cancelButton);
+
+        JButton saveButton = createButton(mode == Mode.CREATE ? "插入" : "保存", true);
+        saveButton.addActionListener(event -> saveAction());
+        buttons.add(saveButton);
+
+        footer.add(buttons, BorderLayout.EAST);
+        return footer;
+    }
+
+    /** 切换节点类型，并丢弃旧类型字段后创建对应属性面板。 */
+    private void changeActionType(EditorType type) {
+        if (type == null) {
+            return;
+        }
+        subtitleLabel.setText(getEditorTypeName(type));
+        delayField.setText(type == EditorType.IMAGE_CHECK ? "1000" : "0");
+        showPropertyPanel(type, null);
+    }
+
+    /** 显示指定节点类型的属性面板，并按需载入原节点数据。 */
+    private void showPropertyPanel(EditorType type, MacroNode node) {
+        currentPropertyPanel = createPropertyPanel(type);
+        if (currentPropertyPanel instanceof ImageCheckPanel imagePanel) {
+            imagePanel.loadConfig(node == null ? null : node.getImageCheckConfig());
+        } else {
+            currentPropertyPanel.load(node == null ? null : node.getAction());
+        }
+        propertyHost.removeAll();
+        propertyHost.add(currentPropertyPanel, BorderLayout.CENTER);
+        propertyHost.revalidate();
+        propertyHost.repaint();
+    }
+
+    /** 为节点类型创建对应的属性面板。 */
+    private PropertyPanel createPropertyPanel(EditorType type) {
+        return switch (type) {
+            case MOUSE_MOVE -> new MouseMovePanel();
+            case MOUSE_PRESS -> new MousePressPanel();
+            case MOUSE_RELEASE -> new MouseReleasePanel();
+            case MOUSE_WHEEL -> new MouseWheelPanel();
+            case KEY_PRESS -> new KeyPressPanel();
+            case KEY_RELEASE -> new KeyReleasePanel();
+            case IMAGE_CHECK -> new ImageCheckPanel();
+        };
+    }
+
+    /** 校验表单并创建新的流程节点交回时间线。 */
+    private void saveAction() {
+        try {
+            long delay = parseDelay();
+            MacroNode result;
+            if (currentPropertyPanel instanceof ImageCheckPanel imagePanel) {
+                result = imagePanel.createImageNode(delay);
+            } else {
+                MacroAction action = currentPropertyPanel.createAction(delay);
+                result = new MacroNode(
+                        null,
+                        NodeType.ACTION,
+                        action,
+                        new ArrayList<>()
+                );
+            }
+            onSave.accept(result);
+            dispose();
+        } catch (NumberFormatException exception) {
+            AppMessageDialog.showError(this, "输入内容不是有效整数");
+        } catch (IllegalArgumentException exception) {
+            String message = exception.getMessage();
+            AppMessageDialog.showError(
+                    this,
+                    message == null || message.isBlank() ? "参数校验失败" : message
+            );
+        }
+    }
+
+    /** 读取并校验普通动作延迟或图像识别重试延迟。 */
+    private long parseDelay() {
+        return NumericInputUtil.readLong(delayField);
+    }
+
+    private long getInitialDelay(MacroNode node) {
+        if (node == null) {
+            return 0L;
+        }
+        if (node.getType() == NodeType.IMAGE_CHECK) {
+            return MacroFlowFactory.findRetryDelay(node);
+        }
+        return node.getAction() == null ? 0L : node.getAction().getDelay();
+    }
+
+    /** 确认删除当前流程节点。 */
+    private void deleteAction() {
+        boolean confirmed = AppMessageDialog.showConfirm(
+                this,
+                "删除动作",
+                "确定删除这个动作吗？"
+        );
+        if (!confirmed) {
+            return;
+        }
+        if (onDelete == null) {
+            AppMessageDialog.showInfo(this, "当前编辑器尚未接入删除功能。");
+            return;
+        }
+        onDelete.accept(preserveDelayCheckBox.isSelected());
+        dispose();
+    }
+
+    /** 创建表单字段行。 */
+    private JPanel createFormRow(String name, JComponent component) {
+        JPanel row = new JPanel(new GridBagLayout());
+        row.setOpaque(false);
+        row.setAlignmentX(LEFT_ALIGNMENT);
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, 38));
+
+        component.setPreferredSize(new Dimension(200, 34));
+        component.setMinimumSize(new Dimension(180, 34));
+        component.setMaximumSize(new Dimension(200, 34));
+
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.gridy = 0;
+        gbc.anchor = GridBagConstraints.WEST;
+        gbc.fill = GridBagConstraints.NONE;
+
+        gbc.gridx = 0;
+        gbc.insets = new Insets(0, 0, 0, 14);
+        row.add(createFieldLabel(name, 72), gbc);
+
+        gbc.gridx = 1;
+        gbc.insets = new Insets(0, 0, 0, 0);
+        row.add(component, gbc);
+
+        gbc.gridx = 2;
+        gbc.weightx = 1;
+        gbc.fill = GridBagConstraints.HORIZONTAL;
+        row.add(Box.createHorizontalGlue(), gbc);
+        return row;
+    }
+
+    /** 创建主题化字段标签。 */
+    private JLabel createFieldLabel(String text, int width) {
+        JLabel label = new JLabel(text);
+        label.setFont(FONT_NORMAL);
+        label.setForeground(PALETTE.textSecondary());
+        label.setPreferredSize(new Dimension(width, 34));
+        label.setVerticalAlignment(SwingConstants.CENTER);
+        return label;
+    }
+
+    /** 设置动作类型下拉框。 */
+    private void configureActionTypeComboBox() {
+        actionTypeCombo.setFont(FONT_NORMAL);
+        ComponentStyleUtil.styleComboBox(actionTypeCombo);
+        actionTypeCombo.setRenderer((list, value, index, selected, focus) ->
+                createComboLabel(
+                        value == null ? "" : getEditorTypeName(value),
+                        selected
+                ));
+    }
+
+    /** 创建鼠标按键下拉框。 */
+    private JComboBox<MouseButton> createMouseButtonComboBox() {
+        JComboBox<MouseButton> comboBox = new JComboBox<>(MouseButton.values());
+        comboBox.setFont(FONT_NORMAL);
+        ComponentStyleUtil.styleComboBox(comboBox);
+        comboBox.setRenderer((list, value, index, selected, focus) ->
+                createComboLabel(getMouseButtonName(value), selected));
+        return comboBox;
+    }
+
+    /** 创建深色下拉框选项。 */
+    private JLabel createComboLabel(String text, boolean selected) {
+        JLabel label = new JLabel(text);
+        label.setOpaque(true);
+        label.setFont(FONT_NORMAL);
+        label.setForeground(PALETTE.textPrimary());
+        label.setBackground(selected
+                ? PALETTE.controlBackground()
+                : PALETTE.targetCard());
+        label.setBorder(selected
+                ? BorderFactory.createCompoundBorder(
+                        BorderFactory.createLineBorder(PALETTE.accent(), 1, true),
+                        new EmptyBorder(4, 7, 4, 7)
+                )
+                : new EmptyBorder(5, 8, 5, 8));
+        return label;
+    }
+
+    /** 创建文本输入框并应用统一主题。 */
+    private JTextField createTextField(String value) {
+        JTextField field = new JTextField(value, 12);
+        field.setFont(FONT_NORMAL);
+        ComponentStyleUtil.styleTextField(field);
+        return field;
+    }
+
+    /** 数值字段单独安装整数规则，不影响按键名称等普通文本。 */
+    private JTextField createIntegerField(String value, String name) {
+        JTextField field = createTextField(value);
+        NumericInputUtil.installInteger(field, name);
+        return field;
+    }
+
+    /** 创建可复制的只读文本框。 */
+    private JTextField createReadOnlyTextField(String value) {
+        JTextField field = createTextField(value);
+        field.setEditable(false);
+        field.setBackground(PALETTE.background());
+        field.setForeground(PALETTE.textMuted());
+        return field;
+    }
+
+    /** 创建圆角操作按钮。 */
+    private JButton createButton(String text, boolean primary) {
+        JButton button = new JButton(text);
+        button.setFont(FONT_BOLD);
+        button.setForeground(PALETTE.textPrimary());
+        Color background = primary ? PALETTE.accent() : PALETTE.controlBackground();
+        Color hover = primary ? PALETTE.accentHover() : PALETTE.targetCard();
+        button.setBackground(background);
+        button.setFocusPainted(false);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setOpaque(false);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setBorder(new EmptyBorder(9, 18, 9, 18));
+        button.setUI(new RoundedButtonUI(background, hover));
+        return button;
+    }
+
+    /** 获取动作类型名称。 */
+    private static String getActionName(ActionType type) {
+        return switch (type) {
+            case MOUSE_MOVE -> "鼠标移动";
+            case MOUSE_PRESS -> "鼠标按下";
+            case MOUSE_RELEASE -> "鼠标释放";
+            case MOUSE_WHEEL -> "鼠标滚轮";
+            case KEY_PRESS -> "键盘按下";
+            case KEY_RELEASE -> "键盘释放";
+        };
+    }
+
+    private static String getEditorTypeName(EditorType type) {
+        if (type == EditorType.IMAGE_CHECK) {
+            return "图像识别";
+        }
+        return getActionName(type.actionType);
+    }
+
+    /** 获取鼠标按键名称。 */
+    private static String getMouseButtonName(MouseButton button) {
+        if (button == null) {
+            return "无";
+        }
+        return switch (button) {
+            case LEFT -> "左键";
+            case MIDDLE -> "中键";
+            case RIGHT -> "右键";
+            case X1 -> "侧键1";
+            case X2 -> "侧键2";
+        };
+    }
+
+    /** 将按键名称转换为 AWT 按键代码。 */
+    private static int resolveKeyCode(String keyName) {
+        String trimmedName = keyName == null ? "" : keyName.trim();
+        if (trimmedName.isEmpty()) {
+            throw new IllegalArgumentException("按键名称不能为空");
+        }
+
+        if (trimmedName.codePointCount(0, trimmedName.length()) == 1) {
+            int character = Character.toUpperCase(trimmedName.codePointAt(0));
+            int keyCode = KeyEvent.getExtendedKeyCodeForChar(character);
+            if (keyCode != KeyEvent.VK_UNDEFINED) {
+                return keyCode;
+            }
+        }
+
+        Integer displayNameCode = findKeyCodeByDisplayName(trimmedName);
+        if (displayNameCode != null) {
+            return displayNameCode;
+        }
+
+        String constantName = normalizeKeyConstantName(trimmedName);
+        try {
+            Field field = KeyEvent.class.getField("VK_" + constantName);
+            if (field.getType() == int.class && Modifier.isStatic(field.getModifiers())) {
+                int keyCode = field.getInt(null);
+                if (keyCode != KeyEvent.VK_UNDEFINED) {
+                    return keyCode;
+                }
+            }
+        } catch (NoSuchFieldException | IllegalAccessException ignored) {
+            // 统一在方法结尾提示无法识别。
+        }
+
+        throw new IllegalArgumentException("无法识别按键名称：" + trimmedName);
+    }
+
+    /** 按照当前系统的 AWT 按键显示名称查找键码。 */
+    private static Integer findKeyCodeByDisplayName(String keyName) {
+        for (Field field : KeyEvent.class.getFields()) {
+            if (!field.getName().startsWith("VK_")
+                    || field.getType() != int.class
+                    || !Modifier.isStatic(field.getModifiers())) {
+                continue;
+            }
+            try {
+                int keyCode = field.getInt(null);
+                if (keyCode != KeyEvent.VK_UNDEFINED
+                        && KeyEvent.getKeyText(keyCode).equalsIgnoreCase(keyName)) {
+                    return keyCode;
+                }
+            } catch (IllegalAccessException ignored) {
+                // 公开常量正常情况下均可读取，异常项直接跳过。
+            }
+        }
+        return null;
+    }
+
+    /** 将常见按键名称转换为 {@link KeyEvent} 常量后缀。 */
+    private static String normalizeKeyConstantName(String keyName) {
+        String normalized = keyName.trim()
+                .toUpperCase(Locale.ROOT)
+                .replace('-', '_')
+                .replace(' ', '_');
+        while (normalized.contains("__")) {
+            normalized = normalized.replace("__", "_");
+        }
+
+        normalized = switch (normalized) {
+            case "制表符" -> "TAB";
+            case "回车", "返回" -> "ENTER";
+            case "空格" -> "SPACE";
+            case "退格" -> "BACK_SPACE";
+            case "删除" -> "DELETE";
+            case "上" -> "UP";
+            case "下" -> "DOWN";
+            case "左" -> "LEFT";
+            case "右" -> "RIGHT";
+            case "ESC" -> "ESCAPE";
+            case "RETURN" -> "ENTER";
+            case "CTRL" -> "CONTROL";
+            case "WIN", "WINDOW", "WINDOWS_KEY", "META" -> "WINDOWS";
+            case "BACKSPACE" -> "BACK_SPACE";
+            case "PRINT_SCREEN" -> "PRINTSCREEN";
+            case "PAGEUP", "PGUP" -> "PAGE_UP";
+            case "PAGEDOWN", "PGDN" -> "PAGE_DOWN";
+            case "CAPSLOCK" -> "CAPS_LOCK";
+            case "NUMLOCK" -> "NUM_LOCK";
+            case "SCROLLLOCK" -> "SCROLL_LOCK";
+            case "SPACEBAR" -> "SPACE";
+            default -> normalized;
+        };
+
+        if (normalized.startsWith("LEFT_") || normalized.startsWith("RIGHT_")) {
+            normalized = normalized.substring(normalized.indexOf('_') + 1);
+        }
+        if (normalized.equals("CTRL")) {
+            normalized = "CONTROL";
+        } else if (normalized.equals("META")) {
+            normalized = "WINDOWS";
+        }
+        return normalized
+                .replace("NUM_PAD_", "NUMPAD")
+                .replace("NUMPAD_", "NUMPAD");
+    }
+
+    /** 获取与已有键码一致的按键名称。 */
+    private static String getConsistentKeyName(MacroAction action) {
+        String keyName = action.getKey() == null ? "" : action.getKey().trim();
+        try {
+            if (resolveKeyCode(keyName) == action.getKeyCode()) {
+                return keyName;
+            }
+        } catch (IllegalArgumentException ignored) {
+            // 无法识别旧名称时，使用现有键码生成标准名称。
+        }
+        return action.getKeyCode() > KeyEvent.VK_UNDEFINED
+                ? KeyEvent.getKeyText(action.getKeyCode())
+                : keyName;
+    }
+
+    /** 根据节点类型动态创建的属性面板基类。 */
+    private abstract class PropertyPanel extends JPanel {
+
+        private int propertyCount;
+
+        private PropertyPanel() {
+            this("动作延迟");
+        }
+
+        private PropertyPanel(String delayLabel) {
+            setOpaque(false);
+            setLayout(new GridBagLayout());
+
+            addEditorRow(createFormRow("动作类型", actionTypeCombo), 0, 0);
+            addEditorRow(createFormRow(delayLabel, delayField), 2, 0);
+
+            JPanel separator = new JPanel();
+            separator.setBackground(PALETTE.border());
+            separator.setPreferredSize(new Dimension(1, 1));
+
+            GridBagConstraints separatorConstraints = new GridBagConstraints();
+            separatorConstraints.gridx = 1;
+            separatorConstraints.gridy = 0;
+            separatorConstraints.gridheight = 3;
+            separatorConstraints.weighty = 1;
+            separatorConstraints.fill = GridBagConstraints.VERTICAL;
+            separatorConstraints.insets = new Insets(0, 14, 0, 14);
+            add(separator, separatorConstraints);
+
+            GridBagConstraints fillerConstraints = new GridBagConstraints();
+            fillerConstraints.gridx = 0;
+            fillerConstraints.gridy = 3;
+            fillerConstraints.gridwidth = 3;
+            fillerConstraints.weighty = 1;
+            fillerConstraints.fill = GridBagConstraints.VERTICAL;
+            add(Box.createVerticalGlue(), fillerConstraints);
+        }
+
+        protected void addProperty(String name, JComponent component) {
+            int column = propertyCount % 2 == 0 ? 0 : 2;
+            int row = propertyCount / 2 + 1;
+            addEditorRow(createFormRow(name, component), column, row);
+            propertyCount++;
+        }
+
+        /** 将字段行放入左右两栏表单。 */
+        private void addEditorRow(JPanel rowPanel, int column, int row) {
+            GridBagConstraints constraints = new GridBagConstraints();
+            constraints.gridx = column;
+            constraints.gridy = row;
+            constraints.weightx = 1;
+            constraints.fill = GridBagConstraints.HORIZONTAL;
+            constraints.anchor = GridBagConstraints.NORTHWEST;
+            constraints.insets = new Insets(row == 0 ? 0 : 10, 0, 0, 0);
+            add(rowPanel, constraints);
+        }
+
+        protected abstract void load(MacroAction action);
+
+        protected abstract MacroAction createAction(long delay);
+    }
+
+    /** IMAGE_CHECK 独立配置面板。 */
+    private final class ImageCheckPanel extends PropertyPanel {
+
+        /** 显示并选择模板 PNG 的入口按钮。 */
+        private final JButton templateButton = createButton("选择模板 PNG", false);
+
+        /** 以百分数编辑匹配阈值，保存时换算为 0 到 1。 */
+        private final JSpinner thresholdSpinner = new JSpinner(
+                new SpinnerNumberModel(90, 1, 100, 1)
+        );
+
+        /** 当前选中的模板文件。 */
+        private File templateFile;
+
+        /** 成功与失败独立配置，均复用现有深色下拉框样式。 */
+        private final JComboBox<ImageCheckBehavior> successBehavior = createBehaviorCombo();
+        private final JComboBox<ImageCheckBehavior> failureBehavior = createBehaviorCombo();
+
+        private JComboBox<ImageCheckBehavior> createBehaviorCombo() {
+            JComboBox<ImageCheckBehavior> combo = new JComboBox<>(ImageCheckBehavior.values());
+            combo.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleComboBox(combo);
+            combo.setRenderer((list, value, index, selected, focus) ->
+                    createComboLabel(value == null ? "" : value.toString(), selected));
+            return combo;
+        }
+
+        private ImageCheckPanel() {
+            super("重试延迟");
+            ComponentStyleUtil.styleSpinner(thresholdSpinner);
+            NumericInputUtil.installSpinner(thresholdSpinner, "图像匹配阈值（%）");
+            templateButton.addActionListener(event -> chooseTemplateImage());
+            addProperty("模板 PNG", templateButton);
+            addProperty("匹配阈值", thresholdSpinner);
+            addProperty("成功行为", successBehavior);
+            addProperty("失败行为", failureBehavior);
+        }
+
+        private void loadConfig(ImageCheckConfig config) {
+            successBehavior.setSelectedItem(config == null
+                    ? ImageCheckBehavior.EXECUTE : config.getSuccessBehavior());
+            failureBehavior.setSelectedItem(config == null
+                    ? ImageCheckBehavior.RETRY : config.getFailureBehavior());
+            if (config == null) {
+                templateFile = null;
+                templateButton.setText("选择模板 PNG");
+                templateButton.setToolTipText(null);
+                thresholdSpinner.setValue(90);
+                return;
+            }
+            templateFile = new File(config.getImagePath());
+            templateButton.setText(templateFile.getName());
+            templateButton.setToolTipText(templateFile.getAbsolutePath());
+            int thresholdPercent = (int) Math.round(
+                    config.getThreshold() * 100.0
+            );
+            thresholdSpinner.setValue(Math.max(
+                    1,
+                    Math.min(100, thresholdPercent)
+            ));
+        }
+
+        private void chooseTemplateImage() {
+            File selected;
+            try {
+                selected = fileDialogs.showDialog(ActionEditorDialog.this,
+                        FileDialogOptions.builder(FileDialogOptions.Mode.OPEN_FILE)
+                                .title("选择图像识别模板").fileType("PNG 图像 (*.png)", "png")
+                                .allowAllFiles(true).initialFile(templateFile).build()).orElse(null);
+            } catch (FileDialogException exception) {
+                AppMessageDialog.showError(ActionEditorDialog.this, exception.getMessage(), exception);
+                return;
+            }
+            if (selected == null) return;
+            if (!selected.getName().toLowerCase(Locale.ROOT).endsWith(".png")) {
+                AppMessageDialog.showError(
+                        ActionEditorDialog.this,
+                        "请选择 PNG 格式的模板图片"
+                );
+                return;
+            }
+            try {
+                if (ImageIO.read(selected) == null) {
+                    throw new IllegalArgumentException("无法识别该 PNG 图片");
+                }
+            } catch (Exception exception) {
+                AppMessageDialog.showError(
+                        ActionEditorDialog.this,
+                        "无法读取模板 PNG",
+                        exception
+                );
+                return;
+            }
+
+            templateFile = selected.getAbsoluteFile();
+            templateButton.setText(templateFile.getName());
+            templateButton.setToolTipText(templateFile.getAbsolutePath());
+        }
+
+        private MacroNode createImageNode(long retryDelay) {
+            if (templateFile == null || !templateFile.isFile()) {
+                throw new IllegalArgumentException("请选择有效的模板 PNG");
+            }
+            int thresholdPercent = NumericInputUtil.commitSpinnerInt(thresholdSpinner);
+            ImageCheckConfig config = new ImageCheckConfig(
+                    templateFile.getAbsolutePath(),
+                    thresholdPercent / 100.0
+            );
+            config.setSuccessBehavior((ImageCheckBehavior) successBehavior.getSelectedItem());
+            config.setFailureBehavior((ImageCheckBehavior) failureBehavior.getSelectedItem());
+            config.setRetryDelay(retryDelay);
+            return new MacroNode(
+                    null,
+                    NodeType.IMAGE_CHECK,
+                    null,
+                    config,
+                    new ArrayList<>(List.of(
+                            new MacroBranch(
+                                    BranchCondition.FOUND,
+                                    null,
+                                    0L
+                            ),
+                            new MacroBranch(
+                                    BranchCondition.NOT_FOUND,
+                                    null,
+                                    retryDelay
+                            )
+                    ))
+            );
+        }
+
+        @Override
+        protected void load(MacroAction action) {
+            // 图像识别不使用 MacroAction。
+        }
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            throw new UnsupportedOperationException("图像识别不创建 MacroAction");
+        }
+    }
+
+    /** 含坐标字段的鼠标动作面板。 */
+    private abstract class CoordinatePanel extends PropertyPanel {
+
+        protected final JTextField xField = createIntegerField("0", "X 坐标");
+        protected final JTextField yField = createIntegerField("0", "Y 坐标");
+
+        private CoordinatePanel() {
+            addProperty("X 坐标", xField);
+            addProperty("Y 坐标", yField);
+        }
+
+        protected void loadCoordinates(MacroAction action) {
+            if (action == null) {
+                xField.setText("0");
+                yField.setText("0");
+                return;
+            }
+            xField.setText(String.valueOf(action.getX()));
+            yField.setText(String.valueOf(action.getY()));
+        }
+
+        protected int getXValue() {
+            return NumericInputUtil.readInt(xField);
+        }
+
+        protected int getYValue() {
+            return NumericInputUtil.readInt(yField);
+        }
+    }
+
+    /** 鼠标移动属性面板。 */
+    private final class MouseMovePanel extends CoordinatePanel {
+
+        @Override
+        protected void load(MacroAction action) {
+            loadCoordinates(action);
+        }
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            return MacroAction.mouseMove(getXValue(), getYValue(), delay);
+        }
+    }
+
+    /** 含鼠标按键的坐标动作面板。 */
+    private abstract class MouseButtonPanel extends CoordinatePanel {
+
+        protected final JComboBox<MouseButton> mouseButtonCombo =
+                createMouseButtonComboBox();
+
+        private MouseButtonPanel() {
+            addProperty("鼠标按键", mouseButtonCombo);
+        }
+
+        @Override
+        protected void load(MacroAction action) {
+            loadCoordinates(action);
+            mouseButtonCombo.setSelectedItem(
+                    action == null || action.getMouseButton() == null
+                            ? MouseButton.LEFT
+                            : action.getMouseButton()
+            );
+        }
+
+        protected MouseButton getMouseButton() {
+            MouseButton button = (MouseButton) mouseButtonCombo.getSelectedItem();
+            if (button == null) {
+                throw new IllegalArgumentException("请选择鼠标按键");
+            }
+            return button;
+        }
+    }
+
+    /** 鼠标按下属性面板。 */
+    private final class MousePressPanel extends MouseButtonPanel {
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            return MacroAction.mousePress(
+                    getXValue(),
+                    getYValue(),
+                    getMouseButton(),
+                    delay
+            );
+        }
+    }
+
+    /** 鼠标释放属性面板。 */
+    private final class MouseReleasePanel extends MouseButtonPanel {
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            return MacroAction.mouseRelease(
+                    getXValue(),
+                    getYValue(),
+                    getMouseButton(),
+                    delay
+            );
+        }
+    }
+
+    /** 鼠标滚轮属性面板。 */
+    private final class MouseWheelPanel extends CoordinatePanel {
+
+        private final JTextField wheelAmountField = createIntegerField("1", "滚轮量");
+
+        private MouseWheelPanel() {
+            addProperty("滚轮量", wheelAmountField);
+        }
+
+        @Override
+        protected void load(MacroAction action) {
+            loadCoordinates(action);
+            wheelAmountField.setText(String.valueOf(
+                    action == null ? 1 : action.getWheelAmount()
+            ));
+        }
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            return MacroAction.mouseWheel(
+                    getXValue(),
+                    getYValue(),
+                    NumericInputUtil.readInt(wheelAmountField),
+                    delay
+            );
+        }
+    }
+
+    /** 键盘动作属性面板。 */
+    private abstract class KeyboardPanel extends PropertyPanel {
+
+        protected final JTextField keyField = createTextField("A");
+        protected final JTextField keyCodeField = createReadOnlyTextField(
+                String.valueOf(KeyEvent.VK_A)
+        );
+        protected KeySide keySide = KeySide.NONE;
+
+        private KeyboardPanel() {
+            installKeyNameSync();
+            addProperty("按键名称", keyField);
+            addProperty("按键代码", keyCodeField);
+        }
+
+        private void installKeyNameSync() {
+            keyField.getDocument().addDocumentListener(new DocumentListener() {
+                @Override
+                public void insertUpdate(DocumentEvent event) {
+                    updateKeyCodePreview();
+                }
+
+                @Override
+                public void removeUpdate(DocumentEvent event) {
+                    updateKeyCodePreview();
+                }
+
+                @Override
+                public void changedUpdate(DocumentEvent event) {
+                    updateKeyCodePreview();
+                }
+            });
+        }
+
+        private void updateKeyCodePreview() {
+            try {
+                keyCodeField.setText(String.valueOf(resolveKeyCode(keyField.getText())));
+            } catch (IllegalArgumentException ignored) {
+                keyCodeField.setText("");
+            }
+        }
+
+        @Override
+        protected void load(MacroAction action) {
+            if (action == null) {
+                keySide = KeySide.NONE;
+                keyField.setText("A");
+                keyCodeField.setText(String.valueOf(KeyEvent.VK_A));
+                return;
+            }
+            keySide = action.getKeySide() == null ? KeySide.NONE : action.getKeySide();
+            keyField.setText(getConsistentKeyName(action));
+            keyCodeField.setText(String.valueOf(action.getKeyCode()));
+        }
+
+        protected String getKeyName() {
+            String keyName = keyField.getText().trim();
+            int keyCode = resolveKeyCode(keyName);
+            keyCodeField.setText(String.valueOf(keyCode));
+            return keyName;
+        }
+
+        protected int getKeyCode() {
+            return resolveKeyCode(keyField.getText());
+        }
+    }
+
+    /** 键盘按下属性面板。 */
+    private final class KeyPressPanel extends KeyboardPanel {
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            String keyName = getKeyName();
+            return MacroAction.keyPress(getKeyCode(), keyName, keySide, delay);
+        }
+    }
+
+    /** 键盘释放属性面板。 */
+    private final class KeyReleasePanel extends KeyboardPanel {
+
+        @Override
+        protected MacroAction createAction(long delay) {
+            String keyName = getKeyName();
+            return MacroAction.keyRelease(getKeyCode(), keyName, keySide, delay);
+        }
+    }
+
+    /** 深色圆角卡片。 */
+    private static final class RoundedPanel extends JPanel {
+
+        private RoundedPanel(LayoutManager layout) {
+            super(layout);
+            setOpaque(false);
+        }
+
+        @Override
+        protected void paintComponent(Graphics graphics) {
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(PALETTE.card());
+            g2.fillRoundRect(0, 0, getWidth(), getHeight(), 16, 16);
+            g2.setColor(PALETTE.border());
+            g2.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 16, 16);
+            g2.dispose();
+            super.paintComponent(graphics);
+        }
+    }
+
+    /** 深色圆角按钮。 */
+    private static final class RoundedButtonUI extends DarkButtonUI {
+
+        private final Color background;
+        private final Color hover;
+
+        private RoundedButtonUI(Color background, Color hover) {
+            this.background = background;
+            this.hover = hover;
+        }
+
+        @Override
+        public void paint(Graphics graphics, JComponent component) {
+            AbstractButton button = (AbstractButton) component;
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                    RenderingHints.VALUE_ANTIALIAS_ON);
+            Color fill = button.getModel().isRollover() ? hover : background;
+            if (button.getModel().isPressed()) {
+                fill = fill.darker();
+            }
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, component.getWidth(), component.getHeight(), 12, 12);
+            g2.setColor(PALETTE.border());
+            g2.drawRoundRect(0, 0, component.getWidth() - 1,
+                    component.getHeight() - 1, 12, 12);
+            g2.dispose();
+            super.paint(graphics, component);
+        }
+    }
+}
