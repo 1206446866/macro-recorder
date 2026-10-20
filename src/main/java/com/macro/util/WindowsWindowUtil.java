@@ -180,7 +180,6 @@ public final class WindowsWindowUtil {
 
             String processName = diagnostic.processName();
             if (diagnostic.processNameError()
-                    || processName == null
                     || targetWindow.getProcessName() == null
                     || !targetWindow.getProcessName().equalsIgnoreCase(processName)) {
                 return true;

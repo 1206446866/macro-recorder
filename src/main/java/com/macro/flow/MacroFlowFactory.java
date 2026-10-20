@@ -2,11 +2,7 @@ package com.macro.flow;
 
 import com.macro.model.MacroAction;
 
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
+import java.util.*;
 
 /** 创建和读取当前线性时间线使用的流程图。 */
 public final class MacroFlowFactory {
@@ -60,7 +56,7 @@ public final class MacroFlowFactory {
         return timelineNodes(flow).stream()
                 .filter(node -> node.getType() == NodeType.ACTION)
                 .map(MacroNode::getAction)
-                .filter(action -> action != null)
+                .filter(Objects::nonNull)
                 .collect(ArrayList::new, ArrayList::add, ArrayList::addAll);
     }
 

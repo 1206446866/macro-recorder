@@ -161,6 +161,28 @@ public final class ComponentStyleUtil {
         checkBox.setBorder(new EmptyBorder(2, 0, 2, 0));
     }
 
+    /** 为互斥单选项复用当前主题的边框、强调色和悬停反馈。 */
+    public static void styleRadioButton(JRadioButton radioButton) {
+        if (radioButton == null) {
+            return;
+        }
+        ThemePalette theme = ThemeManager.getPalette();
+        Icon icon = new AccentRadioButtonIcon(theme);
+        radioButton.setForeground(theme.textPrimary());
+        radioButton.setOpaque(false);
+        radioButton.setContentAreaFilled(false);
+        radioButton.setFocusPainted(false);
+        radioButton.setBorderPainted(false);
+        radioButton.setRolloverEnabled(true);
+        radioButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        radioButton.setIcon(icon);
+        radioButton.setSelectedIcon(icon);
+        radioButton.setDisabledIcon(icon);
+        radioButton.setDisabledSelectedIcon(icon);
+        radioButton.setIconTextGap(8);
+        radioButton.setBorder(new EmptyBorder(2, 0, 2, 0));
+    }
+
     /** 为数值微调框应用深色输入区、聚焦边框和扁平箭头按钮。 */
     public static void styleSpinner(JSpinner spinner) {
         if (spinner == null) {
@@ -425,6 +447,42 @@ public final class ComponentStyleUtil {
                 );
             }
             super.paint(graphics, component);
+        }
+    }
+
+    /** 深色主题单选圆点，禁用时保留可辨认的状态。 */
+    private record AccentRadioButtonIcon(ThemePalette theme) implements Icon {
+        private static final int SIZE = 18;
+
+        @Override
+        public void paintIcon(Component component, Graphics graphics, int x, int y) {
+            AbstractButton button = (AbstractButton) component;
+            boolean enabled = button.isEnabled();
+            boolean emphasized = enabled && (button.isSelected() || button.hasFocus()
+                    || button.getModel().isRollover());
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            g2.translate(x, y);
+            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+            g2.setColor(theme.targetCard());
+            g2.fillOval(1, 1, SIZE - 2, SIZE - 2);
+            g2.setColor(emphasized ? theme.accent() : theme.border());
+            g2.setStroke(new BasicStroke(1.5f));
+            g2.drawOval(1, 1, SIZE - 3, SIZE - 3);
+            if (button.isSelected()) {
+                g2.setColor(enabled ? theme.accent() : theme.textMuted());
+                g2.fillOval(5, 5, 8, 8);
+            }
+            g2.dispose();
+        }
+
+        @Override
+        public int getIconWidth() {
+            return SIZE;
+        }
+
+        @Override
+        public int getIconHeight() {
+            return SIZE;
         }
     }
 

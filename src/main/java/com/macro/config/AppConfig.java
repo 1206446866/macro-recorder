@@ -5,6 +5,10 @@ import lombok.Getter;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
 /**
@@ -23,6 +27,8 @@ public class AppConfig {
     private static final String KEY_RECORD_MOUSE_MOVE = "record.mouseMove";
     private static final String KEY_MOUSE_MOVE_INTERVAL = "record.mouseMoveInterval";
     private static final String KEY_MINIMIZE_ON_RECORDING = "record.minimizeWindow";
+    private static final String KEY_RECORDING_START_BEHAVIOR = "record.startBehavior";
+    private static final String KEY_TIMELINE_INSERT_POSITION = "timeline.defaultInsertPosition";
     private static final String KEY_MINIMIZE_ON_PLAY_START = "minimizeOnPlayStart";
     private static final String KEY_RESTORE_WINDOW_AFTER_PLAY_STOP =
             "restoreWindowAfterPlayStop";
@@ -88,11 +94,18 @@ public class AppConfig {
             return;
         }
 
+        Properties loaded = new Properties();
         try (InputStream inputStream = new FileInputStream(configFile)) {
-            properties.load(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
+            loaded.load(new InputStreamReader(inputStream, StandardCharsets.UTF_8));
+        } catch (IllegalArgumentException e) {
+            // Properties 的非法 Unicode 转义不能留下半份配置，也不能触发自动覆盖。
+            System.err.println("配置文件格式错误，保留原文件并沿用当前配置或默认值：" + e.getMessage());
+            return;
         } catch (IOException e) {
             System.err.println("读取配置文件失败：" + e.getMessage());
+            return;
         }
+        properties.putAll(loaded);
     }
 
     /**
@@ -185,7 +198,7 @@ public class AppConfig {
     }
 
     /**
-     * 保存配置文件。
+     * 完整写入同目录临时文件，再原子替换配置；不支持原子替换时明确失败。
      */
     private boolean save() {
         File parent = configFile.getParentFile();
@@ -195,15 +208,38 @@ public class AppConfig {
             return false;
         }
 
-        try (OutputStream outputStream = new FileOutputStream(configFile);
-             OutputStreamWriter writer = new OutputStreamWriter(outputStream, StandardCharsets.UTF_8)) {
-            properties.store(writer, ApplicationInfo.APP_NAME + " Configuration");
-            writer.flush();
+        Path temporaryPath = null;
+        try {
+            Path targetPath = configFile.toPath().toAbsolutePath();
+            temporaryPath = Files.createTempFile(targetPath.getParent(), "config-", ".tmp");
+            try (Writer writer = Files.newBufferedWriter(temporaryPath, StandardCharsets.UTF_8)) {
+                properties.store(writer, ApplicationInfo.APP_NAME + " Configuration");
+            }
+            replaceConfigFile(temporaryPath, targetPath);
+            temporaryPath = null;
             return true;
+        } catch (AtomicMoveNotSupportedException e) {
+            System.err.println("保存配置文件失败：文件系统不支持原子替换，未替换配置文件。" + e.getMessage());
+            return false;
         } catch (IOException e) {
             System.err.println("保存配置文件失败：" + e.getMessage());
             return false;
+        } finally {
+            // 只清理本次成功创建且尚未移走的临时文件，不扫描或删除已有同名模式文件。
+            if (temporaryPath != null) {
+                try {
+                    Files.deleteIfExists(temporaryPath);
+                } catch (IOException e) {
+                    System.err.println("清理配置临时文件失败：" + temporaryPath + "，" + e.getMessage());
+                }
+            }
         }
+    }
+
+    /** 保持同文件系统原子替换；包内入口便于注入不支持及替换失败，不提供非原子回退。 */
+    void replaceConfigFile(Path temporaryPath, Path targetPath) throws IOException {
+        Files.move(temporaryPath, targetPath,
+                StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
     }
 
     /**
@@ -222,6 +258,29 @@ public class AppConfig {
             boolean minimizeOnPlayStart,
             boolean restoreWindowAfterPlayStop
     ) {
+        return updateSettings(
+                saveDirectory, screenCaptureDirectory, loadLastMacroOnStartup,
+                recordMouseMove, mouseMoveInterval,
+                minimizeOnRecording ? RecordingStartBehavior.MINIMIZE : RecordingStartBehavior.NONE,
+                getTimelineInsertPosition(), minimizeOnPlayStart, restoreWindowAfterPlayStop
+        );
+    }
+
+    /** 一次保存录制窗口行为、时间线插入方向及既有设置，失败时恢复全部旧值。 */
+    public synchronized boolean updateSettings(
+            File saveDirectory,
+            File screenCaptureDirectory,
+            boolean loadLastMacroOnStartup,
+            boolean recordMouseMove,
+            int mouseMoveInterval,
+            RecordingStartBehavior recordingStartBehavior,
+            TimelineInsertPosition timelineInsertPosition,
+            boolean minimizeOnPlayStart,
+            boolean restoreWindowAfterPlayStop
+    ) {
+        if (recordingStartBehavior == null || timelineInsertPosition == null) {
+            throw new IllegalArgumentException("录制启动行为和时间线插入方向不能为空。");
+        }
         Properties previous = new Properties();
         previous.putAll(properties);
 
@@ -241,7 +300,10 @@ public class AppConfig {
         properties.setProperty(LOAD_LAST_MACRO_ON_STARTUP, Boolean.toString(loadLastMacroOnStartup));
         properties.setProperty(KEY_RECORD_MOUSE_MOVE, Boolean.toString(recordMouseMove));
         properties.setProperty(KEY_MOUSE_MOVE_INTERVAL, Integer.toString(mouseMoveInterval));
-        properties.setProperty(KEY_MINIMIZE_ON_RECORDING, Boolean.toString(minimizeOnRecording));
+        properties.setProperty(KEY_RECORDING_START_BEHAVIOR, recordingStartBehavior.name());
+        properties.setProperty(KEY_TIMELINE_INSERT_POSITION, timelineInsertPosition.name());
+        properties.setProperty(KEY_MINIMIZE_ON_RECORDING,
+                Boolean.toString(recordingStartBehavior == RecordingStartBehavior.MINIMIZE));
         properties.setProperty(KEY_MINIMIZE_ON_PLAY_START, Boolean.toString(minimizeOnPlayStart));
         properties.setProperty(
                 KEY_RESTORE_WINDOW_AFTER_PLAY_STOP,
@@ -324,6 +386,29 @@ public class AppConfig {
                 String.valueOf(mouseMoveInterval)
         );
         save();
+    }
+
+    /** 新配置尚未保存或内容无效时仍采用最小化，不使用旧布尔属性推断新模式。 */
+    public RecordingStartBehavior getRecordingStartBehavior() {
+        return readEnum(KEY_RECORDING_START_BEHAVIOR, RecordingStartBehavior.MINIMIZE);
+    }
+
+    /** 未设置时保持既有的向前插入语义。 */
+    public TimelineInsertPosition getTimelineInsertPosition() {
+        return readEnum(KEY_TIMELINE_INSERT_POSITION, TimelineInsertPosition.BEFORE);
+    }
+
+    /** 配置缺失或被手工写入无效枚举值时使用稳定默认值。 */
+    private <E extends Enum<E>> E readEnum(String key, E defaultValue) {
+        String value = properties.getProperty(key);
+        if (value == null) {
+            return defaultValue;
+        }
+        try {
+            return Enum.valueOf(defaultValue.getDeclaringClass(), value.trim());
+        } catch (IllegalArgumentException exception) {
+            return defaultValue;
+        }
     }
     /**
      * 录制开始时是否最小化主窗口。默认开启，保持原有行为。

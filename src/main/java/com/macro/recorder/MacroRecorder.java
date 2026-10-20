@@ -26,8 +26,12 @@ import lombok.SneakyThrows;
 
 import java.awt.event.KeyEvent;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.function.BiFunction;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 
 public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheelListener, NativeKeyListener {
@@ -43,6 +47,18 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     /** 同时保护录制状态、时间基准、动作列表和流程节点列表。 */
     private final Object recordingLock = new Object();
 
+    /** 控制栏输入及挂起区间的过滤器，不改变 NativeHook 的注册方式。 */
+    private final RecordingControlInputFilter controlInputFilter = new RecordingControlInputFilter();
+
+    /** 只跟踪确实写入宏的按下动作，用于跨控制栏、暂停或截图边界配对释放。 */
+    private final Map<Integer, MacroAction> pressedMouseButtons = new HashMap<>();
+    private final Map<Integer, MacroAction> pressedKeys = new HashMap<>();
+
+    private long pauseStartedAt;
+    private boolean imageCaptureStartedPaused;
+    private boolean imageCaptureBridgeAllowed;
+    private LogicalPoint lastRecordedMousePoint;
+
     private final List<MacroAction> actions = new ArrayList<>();
 
     /** 按真实录制顺序保存 ACTION 与 IMAGE_CHECK 节点。 */
@@ -50,11 +66,17 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
     private final double dpiScale;
 
+    /** 仅用于截图会话边界的即时位置查询，不能代替已发生事件的坐标。 */
+    private final Supplier<WindowsMouseUtil.POINT> cursorPosition;
+
+    /** 使用物理屏幕坐标查询顶层窗口，保持与控件区域过滤相同的坐标空间。 */
+    private final BiFunction<Integer, Integer, WinDef.HWND> rootWindowAtPoint;
+
     private long lastTime;
 
     private long lastMouseMoveTime;
 
-    /** 已从宏时间轴排除的图像采集交互总耗时。 */
+    /** 已从宏时间轴排除的图像采集及普通暂停总耗时。 */
     private long excludedCaptureDuration;
 
     /** 图像采集会话序号，用于拒绝过期的异步回调。 */
@@ -83,8 +105,17 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     private Consumer<ImageCaptureSession> onImageCaptureRequested;
 
     public MacroRecorder(AppConfig appConfig) {
+        this(appConfig, WindowsDpiUtil.getScale(), WindowsMouseUtil::getCursorPosition,
+                (x, y) -> WindowsWindowUtil.getRootWindow(WindowsWindowUtil.getWindowFromPoint(x, y)));
+    }
+
+    /** 允许坐标回归检查注入指针与窗口查询，不注册钩子，也不操作真实桌面。 */
+    MacroRecorder(AppConfig appConfig, double dpiScale, Supplier<WindowsMouseUtil.POINT> cursorPosition,
+            BiFunction<Integer, Integer, WinDef.HWND> rootWindowAtPoint) {
         this.appConfig = appConfig;
-        dpiScale = WindowsDpiUtil.getScale();
+        this.dpiScale = dpiScale;
+        this.cursorPosition = cursorPosition;
+        this.rootWindowAtPoint = rootWindowAtPoint;
     }
 
     /**
@@ -128,6 +159,12 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             lastMouseMoveTime = 0;
             excludedCaptureDuration = 0;
             activeImageCaptureSession = null;
+            pauseStartedAt = 0;
+            imageCaptureStartedPaused = false;
+            lastRecordedMousePoint = null;
+            pressedMouseButtons.clear();
+            pressedKeys.clear();
+            controlInputFilter.reset();
             state = RecorderState.RECORDING;
         }
 
@@ -159,8 +196,8 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     @Override
     public void nativeMouseMoved(NativeMouseEvent e) {
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING
-                    || !shouldRecordMouse()
+            if (controlInputFilter.ignoreMouseMotion(e) || state != RecorderState.RECORDING
+                    || !shouldRecordMouse(e)
                     || !appConfig.isRecordMouseMove()) {
                 return;
             }
@@ -170,7 +207,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
                 return;
             }
 
-            LogicalPoint point = getLogicalCursorPosition();
+            LogicalPoint point = getLogicalEventPosition(e);
             recordAction(MacroAction.mouseMove(
                     point.x(),
                     point.y(),
@@ -184,19 +221,22 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     @Override
     public void nativeMousePressed(NativeMouseEvent e) {
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING || !shouldRecordMouse()) {
+            if (controlInputFilter.ignoreMousePress(e)
+                    || state != RecorderState.RECORDING || !shouldRecordMouse(e)) {
                 return;
             }
             long now = timelineNow(System.currentTimeMillis());
-            LogicalPoint point = getLogicalCursorPosition();
+            LogicalPoint point = getLogicalEventPosition(e);
             MouseButton button = convertMouseButton(e.getButton());
             if (button != null) {
-                recordAction(MacroAction.mousePress(
+                MacroAction action = MacroAction.mousePress(
                         point.x(),
                         point.y(),
                         button,
                         elapsedSinceLastAction(now)
-                ));
+                );
+                recordAction(action);
+                pressedMouseButtons.put(e.getButton(), action);
                 lastTime = now;
             }
         }
@@ -205,11 +245,13 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     @Override
     public void nativeMouseReleased(NativeMouseEvent e) {
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING || !shouldRecordMouse()) {
+            boolean recordedPress = pressedMouseButtons.containsKey(e.getButton());
+            if (controlInputFilter.ignoreMouseRelease(e, recordedPress)
+                    || state != RecorderState.RECORDING || (!recordedPress && !shouldRecordMouse(e))) {
                 return;
             }
             long now = timelineNow(System.currentTimeMillis());
-            LogicalPoint point = getLogicalCursorPosition();
+            LogicalPoint point = getLogicalEventPosition(e);
             MouseButton button = convertMouseButton(e.getButton());
             if (button != null) {
                 recordAction(MacroAction.mouseRelease(
@@ -219,6 +261,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
                         elapsedSinceLastAction(now)
                 ));
                 lastTime = now;
+                pressedMouseButtons.remove(e.getButton());
             }
         }
     }
@@ -226,11 +269,12 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     @Override
     public void nativeMouseWheelMoved(NativeMouseWheelEvent e) {
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING || !shouldRecordMouse()) {
+            if (controlInputFilter.ignoreMouseMotion(e)
+                    || state != RecorderState.RECORDING || !shouldRecordMouse(e)) {
                 return;
             }
             long now = timelineNow(System.currentTimeMillis());
-            LogicalPoint point = getLogicalCursorPosition();
+            LogicalPoint point = getLogicalEventPosition(e);
             recordAction(MacroAction.mouseWheel(
                     point.x(),
                     point.y(),
@@ -253,18 +297,22 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             return;
         }
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING || !shouldRecordKeyboard()) {
+            int keyId = RecordingControlInputFilter.keyId(e);
+            if (controlInputFilter.ignoreKeyPress(e, pressedKeys.containsKey(keyId))
+                    || state != RecorderState.RECORDING || !shouldRecordKeyboard()) {
                 return;
             }
             long now = timelineNow(System.currentTimeMillis());
             int keyCode = convertKeyCode(e);
             String key = NativeKeyEvent.getKeyText(e.getKeyCode());
             if (keyCode != -1) {
-                recordAction(MacroAction.keyPress(
+                MacroAction action = MacroAction.keyPress(
                         keyCode,
                         key,
                         elapsedSinceLastAction(now)
-                ));
+                );
+                recordAction(action);
+                pressedKeys.put(keyId, action);
                 lastTime = now;
             }
         }
@@ -277,7 +325,10 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             return;
         }
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING || !shouldRecordKeyboard()) {
+            int keyId = RecordingControlInputFilter.keyId(e);
+            boolean recordedPress = pressedKeys.containsKey(keyId);
+            if (controlInputFilter.ignoreKeyRelease(e, recordedPress)
+                    || state != RecorderState.RECORDING || (!recordedPress && !shouldRecordKeyboard())) {
                 return;
             }
             long now = timelineNow(System.currentTimeMillis());
@@ -290,6 +341,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
                         elapsedSinceLastAction(now)
                 ));
                 lastTime = now;
+                pressedKeys.remove(keyId);
             }
         }
     }
@@ -306,19 +358,25 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         Consumer<ImageCaptureSession> callback;
         ImageCaptureSession session;
         synchronized (recordingLock) {
-            if (state != RecorderState.RECORDING) {
+            if (state != RecorderState.RECORDING && state != RecorderState.PAUSED) {
                 return false;
             }
+            imageCaptureStartedPaused = state == RecorderState.PAUSED;
             long realNow = System.currentTimeMillis();
+            if (!imageCaptureStartedPaused) releasePressedInputs(timelineNow(realNow));
             LogicalPoint point = getLogicalCursorPosition();
+            boolean fromControlBar = controlInputFilter.containsCurrentPoint(point.x() * dpiScale, point.y() * dpiScale);
+            imageCaptureBridgeAllowed = !fromControlBar || lastRecordedMousePoint != null;
+            if (fromControlBar && lastRecordedMousePoint != null) point = lastRecordedMousePoint;
             session = new ImageCaptureSession(
                     ++captureSessionSequence,
                     realNow,
-                    timelineNow(realNow),
+                    timelineNow(imageCaptureStartedPaused ? pauseStartedAt : realNow),
                     point.x(),
                     point.y()
             );
             activeImageCaptureSession = session;
+            controlInputFilter.beginSuspension();
             state = RecorderState.IMAGE_CAPTURE;
             callback = onImageCaptureRequested;
         }
@@ -374,7 +432,9 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
             ImageCaptureSession session = activeImageCaptureSession;
             long realEnd = System.currentTimeMillis();
-            excludedCaptureDuration += Math.max(0, realEnd - session.realStartedAt());
+            if (!imageCaptureStartedPaused) {
+                excludedCaptureDuration += Math.max(0, realEnd - session.realStartedAt());
+            }
 
             if (config != null) {
                 recordedNodes.add(new MacroNode(
@@ -385,10 +445,11 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
                         new ArrayList<>()
                 ));
             }
-            appendMouseBridge(session);
+            if (!imageCaptureStartedPaused) appendMouseBridge(session);
 
             activeImageCaptureSession = null;
-            state = RecorderState.RECORDING;
+            state = imageCaptureStartedPaused ? RecorderState.PAUSED : RecorderState.RECORDING;
+            if (!imageCaptureStartedPaused) controlInputFilter.endSuspension();
             return true;
         }
     }
@@ -400,11 +461,12 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
      * 所花的时间重新带回宏时间轴。</p>
      */
     private void appendMouseBridge(ImageCaptureSession session) {
-        if (!appConfig.isRecordMouseMove()) {
+        if (!appConfig.isRecordMouseMove() || !imageCaptureBridgeAllowed) {
             return;
         }
 
         LogicalPoint end = getLogicalCursorPosition();
+        if (controlInputFilter.containsCurrentPoint(end.x() * dpiScale, end.y() * dpiScale)) return;
         int deltaX = end.x() - session.startX();
         int deltaY = end.y() - session.startY();
         if (deltaX == 0 && deltaY == 0) {
@@ -450,6 +512,11 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
     /** 将普通输入动作同时加入旧动作视图和新流程节点列表。 */
     private void recordAction(MacroAction action) {
+        switch (action.getType()) {
+            case MOUSE_MOVE, MOUSE_PRESS, MOUSE_RELEASE, MOUSE_WHEEL ->
+                    lastRecordedMousePoint = new LogicalPoint(action.getX(), action.getY());
+            default -> { }
+        }
         actions.add(action);
         recordedNodes.add(new MacroNode(
                 MacroFlowFactory.newNodeId(),
@@ -469,12 +536,83 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         return Math.max(0, now - lastTime);
     }
 
-    /** 读取当前鼠标的 Swing 逻辑坐标。 */
+    /** 主窗口提供各录制操作控件的物理屏幕区域与焦点，紧凑模式也可提供完整控制栏。 */
+    public void setControlRegionSupplier(java.util.function.Supplier<RecordingControlInputFilter.Region> supplier) {
+        controlInputFilter.setRegionSupplier(supplier);
+    }
+
+    public void refreshControlRegion() { controlInputFilter.refreshRegion(); }
+
+    /** 普通暂停与截图共用输入过滤和时间补偿，保留此前全部动作。 */
+    public boolean pause() {
+        synchronized (recordingLock) {
+            if (state != RecorderState.RECORDING) return false;
+            pauseStartedAt = System.currentTimeMillis();
+            releasePressedInputs(timelineNow(pauseStartedAt));
+            controlInputFilter.beginSuspension();
+            state = RecorderState.PAUSED;
+            return true;
+        }
+    }
+
+    public boolean resume() {
+        synchronized (recordingLock) {
+            if (state != RecorderState.PAUSED) return false;
+            excludedCaptureDuration += Math.max(0, System.currentTimeMillis() - pauseStartedAt);
+            controlInputFilter.endSuspension();
+            state = RecorderState.RECORDING;
+            return true;
+        }
+    }
+
+    /** 控制栏定时读取轻量快照，不复制高频录制动作列表。 */
+    public RecordingStatus getRecordingStatus() {
+        synchronized (recordingLock) {
+            return new RecordingStatus(state != RecorderState.IDLE,
+                    state == RecorderState.PAUSED || (state == RecorderState.IMAGE_CAPTURE && imageCaptureStartedPaused),
+                    state == RecorderState.IMAGE_CAPTURE, recordedNodes.size());
+        }
+    }
+
+    /** 挂起前闭合已录入的按下动作；真实释放到来时只清除过滤标记，避免悬空按键。 */
+    private void releasePressedInputs(long now) {
+        for (var entry : pressedMouseButtons.entrySet()) {
+            MacroAction pressed = entry.getValue();
+            LogicalPoint releasePoint = lastRecordedMousePoint == null
+                    ? new LogicalPoint(pressed.getX(), pressed.getY()) : lastRecordedMousePoint;
+            recordAction(MacroAction.mouseRelease(releasePoint.x(), releasePoint.y(), pressed.getMouseButton(),
+                    elapsedSinceLastAction(now)));
+            lastTime = now;
+            controlInputFilter.suppressMouseUntilRelease(entry.getKey());
+        }
+        for (var entry : pressedKeys.entrySet()) {
+            MacroAction pressed = entry.getValue();
+            recordAction(MacroAction.keyRelease(pressed.getKeyCode(), pressed.getKey(), elapsedSinceLastAction(now)));
+            lastTime = now;
+            controlInputFilter.suppressKeyUntilRelease(entry.getKey());
+        }
+        pressedMouseButtons.clear();
+        pressedKeys.clear();
+    }
+
+    public record RecordingStatus(boolean recording, boolean paused, boolean capturing, int nodeCount) { }
+
+    /** Windows 钩子事件携带物理屏幕坐标；仅生成动作时沿用现有系统 DPI 转换。 */
+    private LogicalPoint getLogicalEventPosition(NativeMouseEvent event) {
+        return toLogicalPoint(event.getX(), event.getY());
+    }
+
+    /** 截图开始与结束需要当下位置，不能把该查询用于排队的鼠标事件。 */
     private LogicalPoint getLogicalCursorPosition() {
-        WindowsMouseUtil.POINT point = WindowsMouseUtil.getCursorPosition();
+        WindowsMouseUtil.POINT point = cursorPosition.get();
+        return toLogicalPoint(point.x, point.y);
+    }
+
+    /** 保留既有逻辑坐标及整数截断方式，不修改 DPI、负坐标或轨迹采样规则。 */
+    private LogicalPoint toLogicalPoint(int x, int y) {
         return new LogicalPoint(
-                (int) (point.x / dpiScale),
-                (int) (point.y / dpiScale)
+                (int) (x / dpiScale),
+                (int) (y / dpiScale)
         );
     }
 
@@ -662,18 +800,17 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     }
 
     /**
-     * 判断鼠标当前位置是否位于目标窗口。
+     * 判断鼠标事件发生位置是否位于目标窗口。
      *
+     * @param event 携带物理屏幕坐标的原生事件
      * @return 是否应该记录
      */
-    private boolean shouldRecordMouse() {
+    private boolean shouldRecordMouse(NativeMouseEvent event) {
         if (targetHwnd == null) {
             return true;
         }
 
-        WindowsMouseUtil.POINT point = WindowsMouseUtil.getCursorPosition();
-        WinDef.HWND currentWindow = WindowsWindowUtil.getWindowFromPoint(point.x, point.y);
-        currentWindow = WindowsWindowUtil.getRootWindow(currentWindow);
+        WinDef.HWND currentWindow = rootWindowAtPoint.apply(event.getX(), event.getY());
         return targetHwnd.equals(currentWindow);
     }
 
@@ -697,6 +834,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     private enum RecorderState {
         IDLE,
         RECORDING,
+        PAUSED,
         IMAGE_CAPTURE
     }
 

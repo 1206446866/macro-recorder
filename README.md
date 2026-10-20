@@ -7,6 +7,7 @@ Macro Recorder 是一个基于 Java 的 Windows 键鼠宏录制与播放工具�
 ## 主要功能
 
 - **录制**：鼠标移动、按下/释放、滚轮、键盘按下/释放；支持设置鼠标移动采样间隔及指定目标窗口。
+- **录制控制栏**：录制时主窗口自身缩成条状，提供截图、暂停/继续、终止和最小化；保留原生标题栏，停止后恢复完整窗口。原有开始录制自动最小化设置继续生效。
 - **播放**：指定循环次数或无限循环，暂停、继续、停止；停止和异常结束时释放已按下的键鼠。
 - **时间线**：横向滚动查看动作、选中节点、双击编辑、右键插入/删除、Delete 删除；支持直接编辑坐标及动作间延迟。
 - **动作编辑**：在同一个编辑器中插入或编辑动作类型和属性，键盘代码由按键名称生成且只读。
@@ -162,17 +163,20 @@ dist/
 
 ## 开发验证
 
-当前回归用例是带 `main()` 的独立 Java 测试，**不由 Maven Surefire 自动运行**。先执行 `mvn -q -DskipTests package`，再按需运行，例如：
+安全回归检查已通过轻量 JUnit 入口接入 Maven Surefire。在项目根目录执行：
 
 ```powershell
-java -Djava.awt.headless=true -cp "target/test-classes;target/classes;target/lib/*" com.macro.ui.util.NumericInputUtilTest
-java -cp "target/test-classes;target/classes;target/lib/*" com.macro.storage.MacroStorageFailureTest
-java -cp "target/test-classes;target/classes;target/lib/*" com.macro.ui.filedialog.FileDialogServiceTest
+mvn test
+# 无桌面环境：图像分支旧测试因 Robot 构造限制明确跳过，其余适用检查继续执行。
+mvn test '-Djava.awt.headless=true'
 ```
 
-`ImageCheckBehaviorTest`、`ImageCheckEditorTest`、`NumericEditorIntegrationTest` 等覆盖行为分支、编辑器和保存重载；部分测试需要 Windows 桌面。`NativeFileDialogSmokeTest` 会显示原生文件面板，`ImageRecognitionDiagnosticsTest` 会显示测试窗口并实际截图，请在可交互的环境中单独运行。
+默认入口复用已审查的七个测试主程序，并增加时间线的无窗口检查；Windows/COM 与桌面依赖会在 JUnit 中明确报告跳过。每个旧测试都使用独立 JVM 和 `target/test-sandboxes/` 下新建的应用目录，避免 `AppConfig` 读写个人配置；失败返回 Surefire，未发现测试时构建失败。测试报告位于 `target/surefire-reports/`。
+
+现有独立 `main()` 入口仍然保留。会显示窗口、实际截图、注册全局钩子或等待用户操作的检查不进入默认自动运行，也不能直接在个人配置目录中批量启动。全部测试的副作用盘点、自动范围、隔离原理和人工验证边界见 [`docs/automated-tests.md`](docs/automated-tests.md)。
 
 数字输入规则和范围见 [`docs/numeric-input-rules.md`](docs/numeric-input-rules.md)。
+录制控制栏的状态、过滤机制及验证范围见 [`docs/recording-control-bar.md`](docs/recording-control-bar.md)。
 
 ## 当前已知限制
 

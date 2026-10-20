@@ -5,6 +5,7 @@ import com.macro.flow.ImageCheckConfig;
 import com.macro.flow.ImageMatchResult;
 import com.macro.flow.ImageMatcher;
 import com.macro.flow.MacroNode;
+import com.macro.util.ImageTemplatePathUtil;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
@@ -40,6 +41,13 @@ public final class OpenCvImageMatcher implements ImageMatcher {
      */
     public OpenCvImageMatcher(Supplier<File> baseDirectorySupplier) {
         this.baseDirectorySupplier = baseDirectorySupplier;
+    }
+
+    @Override
+    public void validate(MacroNode node) throws IOException {
+        validateConfig(node, node.getImageCheckConfig());
+        ImageTemplatePathUtil.requireTemplate(node,
+                baseDirectorySupplier == null ? null : baseDirectorySupplier.get());
     }
 
     /**
@@ -143,17 +151,8 @@ public final class OpenCvImageMatcher implements ImageMatcher {
 
     /** 将相对模板路径按当前 MR 文件目录解析为绝对路径。 */
     private Path resolvePath(String imagePath) {
-        Path path = Path.of(imagePath);
-        if (path.isAbsolute()) {
-            return path.normalize();
-        }
-        File baseDirectory = baseDirectorySupplier == null
-                ? null
-                : baseDirectorySupplier.get();
-        Path basePath = baseDirectory == null
-                ? Path.of("").toAbsolutePath()
-                : baseDirectory.toPath().toAbsolutePath();
-        return basePath.resolve(path).normalize();
+        return ImageTemplatePathUtil.resolve(imagePath,
+                baseDirectorySupplier == null ? null : baseDirectorySupplier.get());
     }
 
     /** 按路径和修改时间缓存模板，闭环重试时不重复解码 PNG。 */

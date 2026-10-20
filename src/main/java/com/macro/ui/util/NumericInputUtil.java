@@ -205,8 +205,8 @@ public final class NumericInputUtil {
         @Override public Object stringToValue(String text) throws ParseException {
             try {
                 long value = parse(text, rule);
-                if (integer) return Integer.valueOf((int) value);
-                return Long.valueOf(value);
+                if (integer) return (int) value;
+                return value;
             } catch (IllegalArgumentException exception) {
                 throw new ParseException(exception.getMessage(), 0);
             }

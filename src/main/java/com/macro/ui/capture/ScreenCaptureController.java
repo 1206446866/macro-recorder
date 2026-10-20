@@ -7,6 +7,7 @@ import java.awt.*;
 import java.awt.image.BufferedImage;
 import java.awt.image.MultiResolutionImage;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.CancellationException;
@@ -26,6 +27,9 @@ public final class ScreenCaptureController {
     private final Consumer<BufferedImage> onCaptured;
     private final Runnable onCancelled;
     private final Consumer<Throwable> onFailed;
+    private final boolean hideAllApplicationWindows;
+    /** 只恢复本次截图前确实可见的窗口，不复活截图期间已关闭的窗口。 */
+    private final List<VisibleWindowState> hiddenWindows = new ArrayList<>();
 
     private boolean capturing;
     private boolean ownerWasVisible;
@@ -63,10 +67,17 @@ public final class ScreenCaptureController {
             Runnable onCancelled,
             Consumer<Throwable> onFailed
     ) {
+        this(owner, onCaptured, onCancelled, onFailed, false);
+    }
+
+    /** 录制截图可隐藏本进程所有可见窗口，普通采集页面仍沿用原来的所属窗口行为。 */
+    public ScreenCaptureController(JFrame owner, Consumer<BufferedImage> onCaptured,
+            Runnable onCancelled, Consumer<Throwable> onFailed, boolean hideAllApplicationWindows) {
         this.owner = Objects.requireNonNull(owner, "主窗口不能为空");
         this.onCaptured = Objects.requireNonNull(onCaptured, "截图回调不能为空");
         this.onCancelled = Objects.requireNonNull(onCancelled, "取消回调不能为空");
         this.onFailed = Objects.requireNonNull(onFailed, "失败回调不能为空");
+        this.hideAllApplicationWindows = hideAllApplicationWindows;
     }
 
     /** 开始一次截图。重复调用时会忽略尚未结束的截图请求。 */
@@ -92,7 +103,12 @@ public final class ScreenCaptureController {
             failCapture(sessionId, exception);
             return;
         }
-        owner.setVisible(false);
+        try {
+            hideCaptureWindows();
+        } catch (RuntimeException exception) {
+            failCapture(sessionId, exception);
+            return;
+        }
         Toolkit.getDefaultToolkit().sync();
 
         // 给桌面窗口管理器留出刷新时间，避免截图中残留主窗口。
@@ -102,6 +118,22 @@ public final class ScreenCaptureController {
         );
         captureTimer.setRepeats(false);
         captureTimer.start();
+    }
+
+    /** 先快照全部窗口，再隐藏，避免隐藏所属窗口后丢失子窗口原先的可见状态。 */
+    private void hideCaptureWindows() {
+        hiddenWindows.clear();
+        if (hideAllApplicationWindows) {
+            for (Window window : Window.getWindows()) {
+                if (window.isVisible()) hiddenWindows.add(new VisibleWindowState(window,
+                        window instanceof Frame frame ? frame.getExtendedState() : Frame.NORMAL));
+            }
+        } else if (ownerWasVisible) {
+            hiddenWindows.add(new VisibleWindowState(owner, ownerExtendedState));
+        }
+        for (int index = hiddenWindows.size() - 1; index >= 0; index--) {
+            hiddenWindows.get(index).window.setVisible(false);
+        }
     }
 
     /** 从外部取消当前截图，例如录制期间按下 F12。 */
@@ -275,8 +307,12 @@ public final class ScreenCaptureController {
             overlay = null;
         }
 
-        owner.setExtendedState(ownerExtendedState);
-        owner.setVisible(ownerWasVisible);
+        for (VisibleWindowState saved : hiddenWindows) {
+            if (!saved.window.isDisplayable()) continue;
+            if (saved.window instanceof Frame frame) frame.setExtendedState(saved.extendedState);
+            saved.window.setVisible(true);
+        }
+        hiddenWindows.clear();
         if (ownerWasVisible) {
             if ((ownerExtendedState & Frame.ICONIFIED) == 0) {
                 owner.toFront();
@@ -284,6 +320,8 @@ public final class ScreenCaptureController {
             }
         }
     }
+
+    private record VisibleWindowState(Window window, int extendedState) { }
 
     /** 判断回调是否仍属于当前截图会话。 */
     private boolean isCurrentSession(long sessionId) {

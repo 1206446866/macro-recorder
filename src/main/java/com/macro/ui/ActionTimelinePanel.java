@@ -1,5 +1,7 @@
 package com.macro.ui;
 
+import com.macro.config.TimelineInsertPosition;
+import com.macro.flow.BranchCondition;
 import com.macro.flow.ImageCheckConfig;
 import com.macro.flow.ImageCheckBehavior;
 import com.macro.flow.MacroFlow;
@@ -24,6 +26,8 @@ import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.AWTEventListener;
+import java.awt.event.HierarchyEvent;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
@@ -33,7 +37,11 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Objects;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.util.function.LongConsumer;
+import java.util.function.LongSupplier;
 
 /**
  * 支持横向滚动的流程节点时间线。
@@ -68,6 +76,14 @@ public class ActionTimelinePanel extends JPanel {
     @Getter
     private MacroNode selectedMacroNode;
     private NodePanel selectedNode;
+    /** 当前行内编辑会话；重建时间线前先取消，避免旧组件延迟提交。 */
+    private InlineEditSession activeEdit;
+    private long timelineRevision;
+
+    /** 实际播放状态由主窗口提供；本地开关只补足播放线程启动及收尾的边界。 */
+    private BooleanSupplier editPermission = () -> true;
+    private boolean editingEnabled = true;
+    private long editGeneration;
 
     @Setter
     private Consumer<MacroNode> onActionSelected;
@@ -138,11 +154,47 @@ public class ActionTimelinePanel extends JPanel {
         card.add(scrollPane, BorderLayout.CENTER);
         add(card, BorderLayout.CENTER);
 
+        addHierarchyListener(event -> {
+            if ((event.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && !isShowing()) {
+                cancelInlineEdit();
+            }
+        });
+
         rebuildTimeline();
     }
 
     public void setActions(List<MacroAction> newActions) {
         setFlow(MacroFlowFactory.fromActions(newActions));
+    }
+
+    /** 每次写入时重新读取权限，不依赖异步状态通知是否已到达 EDT。 */
+    public void setEditPermission(BooleanSupplier permission) {
+        editPermission = Objects.requireNonNull(permission);
+        if (!isEditingAllowed()) {
+            editGeneration++;
+            cancelInlineEdit();
+        }
+    }
+
+    /** 只限制编辑，不禁用面板、节点选择、滚动或复制。 */
+    public void setEditingEnabled(boolean enabled) {
+        if (editingEnabled != enabled) {
+            editingEnabled = enabled;
+            editGeneration++;
+        }
+        if (!enabled) cancelInlineEdit();
+    }
+
+    public boolean isEditingAllowed() {
+        return editingEnabled && editPermission.getAsBoolean();
+    }
+
+    /** 弹窗及确认操作跨越播放边界后，即使已经恢复空闲，也不再接受旧结果。 */
+    public <T> Consumer<T> guardEditCallback(Consumer<T> callback) {
+        long generation = editGeneration;
+        return value -> {
+            if (generation == editGeneration && isEditingAllowed()) callback.accept(value);
+        };
     }
 
     /**
@@ -175,7 +227,7 @@ public class ActionTimelinePanel extends JPanel {
     }
 
     public boolean deleteAction(int index, boolean preserveDelay) {
-        if (index < 0 || index >= nodes.size()) {
+        if (!isEditingAllowed() || index < 0 || index >= nodes.size()) {
             return false;
         }
         MacroNode node = nodes.get(index);
@@ -215,9 +267,29 @@ public class ActionTimelinePanel extends JPanel {
         if (anchorIndex < 0 || newNode == null) {
             return false;
         }
+        return insertAt(anchorIndex, newNode);
+    }
 
+    /** 按显式锚点或当前选择应用默认方向；无选择时追加，过期锚点不插入。 */
+    public boolean insertAction(MacroNode anchorNode, MacroNode newNode, TimelineInsertPosition position) {
+        if (newNode == null) return false;
+        MacroNode anchor = anchorNode == null ? selectedMacroNode : anchorNode;
+        if (anchor == null) return insertAt(nodes.size(), newNode);
+        int anchorIndex = nodes.indexOf(anchor);
+        if (anchorIndex < 0) return false;
+        return insertAt(anchorIndex + (position == TimelineInsertPosition.AFTER ? 1 : 0), newNode);
+    }
+
+    /** 明确指定向后插入，不受设置中的默认方向影响。 */
+    public boolean insertActionAfter(MacroNode anchorNode, MacroNode newNode) {
+        int anchorIndex = nodes.indexOf(anchorNode);
+        return anchorIndex >= 0 && newNode != null && insertAt(anchorIndex + 1, newNode);
+    }
+
+    private boolean insertAt(int index, MacroNode newNode) {
+        if (!isEditingAllowed()) return false;
         newNode.setId(MacroFlowFactory.newNodeId());
-        nodes.add(anchorIndex, newNode);
+        nodes.add(index, newNode);
         selectedMacroNode = newNode;
         selectedNode = null;
         rebuildFlowGraph();
@@ -235,7 +307,7 @@ public class ActionTimelinePanel extends JPanel {
      */
     public boolean replaceAction(MacroNode originalNode, MacroNode newNode) {
         int actionIndex = nodes.indexOf(originalNode);
-        if (actionIndex < 0 || newNode == null) {
+        if (!isEditingAllowed() || actionIndex < 0 || newNode == null) {
             return false;
         }
 
@@ -258,6 +330,8 @@ public class ActionTimelinePanel extends JPanel {
     }
 
     private void rebuildTimeline() {
+        cancelInlineEdit();
+        timelineRevision++;
         timelinePanel.removeAll();
         updateSummary();
 
@@ -363,6 +437,7 @@ public class ActionTimelinePanel extends JPanel {
             public void mouseClicked(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)
                         && event.getClickCount() == 2
+                        && isEditingAllowed()
                         && onActionDoubleClicked != null) {
                     onActionDoubleClicked.accept(macroNode);
                 }
@@ -496,7 +571,7 @@ public class ActionTimelinePanel extends JPanel {
 
     private void beginDelayEdit(JPanel connector, JLabel delayLabel, JComponent arrow, MacroAction action) {
         int labelIndex = indexOf(connector, delayLabel);
-        if (labelIndex < 0) {
+        if (labelIndex < 0 || !prepareInlineEdit()) {
             return;
         }
         JTextField editor = new JTextField(String.valueOf(action.getDelay()));
@@ -515,46 +590,173 @@ public class ActionTimelinePanel extends JPanel {
         connector.revalidate();
         connector.repaint();
 
-        final boolean[] finished = {false};
-        Consumer<Boolean> commit = showError -> {
-            if (finished[0]) return;
-            long value;
-            try {
-                value = NumericInputUtil.readLong(editor);
-            } catch (IllegalArgumentException exception) {
-                if (showError) AppMessageDialog.showWarning(ActionTimelinePanel.this, exception.getMessage());
-                return;
-            }
-            finished[0] = true;
+        startInlineEdit(editor, () -> NumericInputUtil.readLong(editor), value -> {
             action.setDelay(value);
             delayLabel.setText(formatDelay(action.getDelay()));
-            replaceEditor(connector, editor, delayLabel, arrow);
             updateSummary();
-        };
-        Runnable cancel = () -> {
-            if (finished[0]) return;
-            finished[0] = true;
-            replaceEditor(connector, editor, delayLabel, arrow);
-        };
-        editor.addActionListener(event -> commit.accept(true));
-        editor.addFocusListener(new FocusAdapter() {
-            @Override
-            public void focusLost(FocusEvent event) {
-                commit.accept(false);
+        }, () -> replaceEditor(connector, editor, delayLabel, arrow));
+    }
+
+    /** 修改共用重试值，同时写回真正参与播放的重试分支，不重建或改写跳转关系。 */
+    private void beginRetryDelayEdit(MacroNode node) {
+        if (!nodes.contains(node) || node.getImageCheckConfig() == null
+                || behaviorConditions(node, ImageCheckBehavior.RETRY).isEmpty()
+                || !prepareInlineEdit()) return;
+        TimelineTrackPanel track = (TimelineTrackPanel) timelinePanel;
+        JTextField editor = new JTextField(Long.toString(MacroFlowFactory.findRetryDelay(node)));
+        ComponentStyleUtil.styleTextField(editor);
+        editor.setHorizontalAlignment(SwingConstants.CENTER);
+        editor.setFont(track.getFont().deriveFont(Font.PLAIN, 11f));
+        editor.setBorder(BorderFactory.createLineBorder(THEME.accent()));
+        NumericInputUtil.installNonNegativeLong(editor, "重试延迟（ms）");
+        // 编辑器叠放在回路原有文字处，零布局占位保持节点与连接线位置不变。
+        editor.setPreferredSize(new Dimension(0, 0));
+        editor.setMinimumSize(new Dimension(0, 0));
+        editor.setMaximumSize(new Dimension(0, 0));
+        track.retryNode = node;
+        track.retryEditor = editor;
+        track.add(editor);
+        track.positionRetryEditor();
+        track.revalidate();
+        track.repaint();
+        startInlineEdit(editor, () -> NumericInputUtil.readLong(editor), value -> {
+            ImageCheckConfig config = node.getImageCheckConfig();
+            config.setRetryDelay(value);
+            if (node.getChildren() != null) {
+                node.getChildren().stream().filter(branch -> branch != null
+                        && ((branch.getCondition() == BranchCondition.FOUND
+                                && config.getSuccessBehavior() == ImageCheckBehavior.RETRY)
+                            || (branch.getCondition() == BranchCondition.NOT_FOUND
+                                && config.getFailureBehavior() == ImageCheckBehavior.RETRY)))
+                        .forEach(branch -> branch.setDelay(value));
             }
+        }, () -> {
+            track.remove(editor);
+            track.retryEditor = null;
+            track.retryNode = null;
+            track.revalidate();
+            track.repaint();
         });
-        editor.addKeyListener(new KeyAdapter() {
-            @Override
-            public void keyPressed(KeyEvent event) {
-                if (event.getKeyCode() == KeyEvent.VK_ESCAPE) {
-                    cancel.run();
+    }
+
+    /** 同一时刻只编辑一个数值，无效文本留在原输入框并显示统一校验提示。 */
+    private boolean prepareInlineEdit() {
+        if (!isEditingAllowed()) {
+            cancelInlineEdit();
+            return false;
+        }
+        return activeEdit == null || activeEdit.commit(false);
+    }
+
+    private void startInlineEdit(JTextField editor, LongSupplier parser,
+            LongConsumer setter, Runnable restore) {
+        InlineEditSession session = new InlineEditSession(editor, parser, setter, restore);
+        activeEdit = session;
+        session.install();
+    }
+
+    private void cancelInlineEdit() {
+        if (activeEdit != null) activeEdit.cancel();
+    }
+
+    @Override
+    public void removeNotify() {
+        cancelInlineEdit();
+        super.removeNotify();
+    }
+
+    /** 统一处理失焦、回车、取消和组件生命周期，防止同一次编辑重复写入模型。 */
+    private final class InlineEditSession {
+        private final JTextField editor;
+        private final LongSupplier parser;
+        private final LongConsumer setter;
+        private final Runnable restore;
+        private final long revision = timelineRevision;
+        private final boolean wasShowing;
+        private boolean finished;
+        private final AWTEventListener clickListener = this::handleMouseEvent;
+
+        private InlineEditSession(JTextField editor, LongSupplier parser,
+                LongConsumer setter, Runnable restore) {
+            this.editor = editor;
+            this.parser = parser;
+            this.setter = setter;
+            this.restore = restore;
+            wasShowing = editor.isShowing();
+        }
+
+        private void install() {
+            editor.addActionListener(event -> commit(true));
+            editor.addFocusListener(new FocusAdapter() {
+                @Override
+                public void focusLost(FocusEvent event) {
+                    commit(false);
                 }
+            });
+            editor.addKeyListener(new KeyAdapter() {
+                @Override
+                public void keyPressed(KeyEvent event) {
+                    if (event.getKeyCode() == KeyEvent.VK_ESCAPE) {
+                        cancel();
+                        event.consume();
+                    }
+                }
+            });
+            // 仅在本窗口编辑期间观察鼠标，不消费事件，也不改变其他控件的操作。
+            Toolkit.getDefaultToolkit().addAWTEventListener(clickListener, AWTEvent.MOUSE_EVENT_MASK);
+            SwingUtilities.invokeLater(() -> {
+                if (!finished && activeEdit == this && editor.isShowing()) {
+                    editor.requestFocusInWindow();
+                    editor.selectAll();
+                }
+            });
+        }
+
+        private void handleMouseEvent(AWTEvent event) {
+            if (!(event instanceof MouseEvent mouse) || mouse.getID() != MouseEvent.MOUSE_PRESSED
+                    || !(mouse.getSource() instanceof Component source)
+                    || source == editor || SwingUtilities.isDescendingFrom(source, editor)) return;
+            Window owner = SwingUtilities.getWindowAncestor(editor);
+            if (owner == null || SwingUtilities.getWindowAncestor(source) != owner) return;
+            // JLabel、空白面板不会主动取得焦点，因此在普通点击分发前完成有效提交。
+            if (commit(false) && !source.isFocusable()) requestFocusInWindow();
+        }
+
+        private boolean commit(boolean showError) {
+            if (finished) return true;
+            if (!isEditingAllowed() || revision != timelineRevision || editor.getParent() == null
+                    || (wasShowing && !editor.isShowing())) {
+                cancel();
+                return true;
             }
-        });
-        SwingUtilities.invokeLater(() -> {
-            editor.requestFocusInWindow();
-            editor.selectAll();
-        });
+            long value;
+            try {
+                value = parser.getAsLong();
+            } catch (IllegalArgumentException exception) {
+                if (showError) AppMessageDialog.showWarning(ActionTimelinePanel.this, exception.getMessage());
+                return false;
+            }
+            if (!isEditingAllowed()) {
+                cancel();
+                return true;
+            }
+            finish();
+            setter.accept(value);
+            restore.run();
+            return true;
+        }
+
+        private void cancel() {
+            if (finished) return;
+            finish();
+            restore.run();
+        }
+
+        private void finish() {
+            finished = true;
+            Toolkit.getDefaultToolkit().removeAWTEventListener(clickListener);
+            if (activeEdit == this) activeEdit = null;
+        }
     }
 
     private void replaceEditor(JPanel parent, JComponent editor, JComponent replacement, JComponent anchor) {
@@ -606,22 +808,32 @@ public class ActionTimelinePanel extends JPanel {
         ));
 
         JMenuItem edit = createMenuItem("编辑动作", IconType.EDIT);
+        edit.setEnabled(isEditingAllowed());
+        Consumer<java.awt.event.ActionEvent> editRequest = guardEditCallback(event -> {
+            if (onActionEditRequested != null) onActionEditRequested.accept(macroNode);
+        });
         edit.addActionListener(event -> {
-            if (onActionEditRequested != null) {
-                onActionEditRequested.accept(macroNode);
-            }
+            editRequest.accept(event);
         });
         JMenuItem insert = createMenuItem("插入动作", IconType.INSERT);
+        insert.setEnabled(isEditingAllowed());
+        Consumer<java.awt.event.ActionEvent> insertRequest = guardEditCallback(event -> {
+            if (onActionInsertRequested != null) onActionInsertRequested.accept(macroNode);
+        });
         insert.addActionListener(event -> {
-            if (onActionInsertRequested != null) {
-                onActionInsertRequested.accept(macroNode);
-            }
+            insertRequest.accept(event);
         });
         JMenuItem delete = createMenuItem("删除动作", IconType.DELETE);
-        delete.addActionListener(event -> deleteAndNotify(macroNode));
+        delete.setEnabled(isEditingAllowed());
+        Consumer<java.awt.event.ActionEvent> deleteRequest = guardEditCallback(event -> deleteAndNotify(macroNode));
+        delete.addActionListener(deleteRequest::accept);
         JMenuItem copy = createMenuItem("复制信息", IconType.COPY);
         copy.addActionListener(event -> copyActionInfo(macroNode));
 
+        if (macroNode == null) {
+            menu.add(insert);
+            return menu;
+        }
         menu.add(edit);
         menu.add(insert);
         menu.add(delete);
@@ -655,17 +867,18 @@ public class ActionTimelinePanel extends JPanel {
     }
 
     private void deleteAndNotify(MacroNode macroNode) {
+        if (!isEditingAllowed()) return;
+        Consumer<Boolean> delete = guardEditCallback(confirmed -> {
+            if (confirmed && deleteAction(macroNode, false) && onActionDeleteRequested != null) {
+                onActionDeleteRequested.accept(macroNode);
+            }
+        });
         boolean confirmed = AppMessageDialog.showConfirm(
                 this,
                 "删除动作",
                 "确定删除这个动作吗？"
         );
-        if (!confirmed || !deleteAction(macroNode, false)) {
-            return;
-        }
-        if (onActionDeleteRequested != null) {
-            onActionDeleteRequested.accept(macroNode);
-        }
+        delete.accept(confirmed);
     }
 
     private void selectMacroNode(MacroNode macroNode) {
@@ -896,6 +1109,7 @@ public class ActionTimelinePanel extends JPanel {
 
         private void beginEdit() {
             if (getComponentCount() == 1 && getComponent(0) instanceof JTextField) return;
+            if (!prepareInlineEdit()) return;
             JTextField editor = new JTextField(String.valueOf(value));
             editor.setHorizontalAlignment(SwingConstants.CENTER);
             editor.setFont(valueLabel.getFont());
@@ -909,47 +1123,16 @@ public class ActionTimelinePanel extends JPanel {
             revalidate();
             repaint();
 
-            final boolean[] finished = {false};
-            Runnable commit = () -> finishEdit(editor, true, finished, true);
-            Runnable cancel = () -> finishEdit(editor, false, finished, false);
-            editor.addActionListener(event -> commit.run());
-            editor.addFocusListener(new FocusAdapter() {
-                @Override
-                public void focusLost(FocusEvent event) {
-                    finishEdit(editor, true, finished, false);
-                }
-            });
-            editor.addKeyListener(new KeyAdapter() {
-                @Override
-                public void keyPressed(KeyEvent event) {
-                    if (event.getKeyCode() == KeyEvent.VK_ESCAPE) cancel.run();
-                }
-            });
-            SwingUtilities.invokeLater(() -> {
-                editor.requestFocusInWindow();
-                editor.selectAll();
-            });
-        }
-
-        private void finishEdit(JTextField editor, boolean commit, boolean[] finished, boolean showError) {
-            if (finished[0]) return;
-            if (commit) {
-                int newValue;
-                try {
-                    newValue = NumericInputUtil.readInt(editor);
-                } catch (IllegalArgumentException exception) {
-                    if (showError) AppMessageDialog.showWarning(ActionTimelinePanel.this, exception.getMessage());
-                    return;
-                }
-                value = newValue;
+            startInlineEdit(editor, () -> NumericInputUtil.readInt(editor), newValue -> {
+                value = (int) newValue;
                 setter.accept(value);
-            }
-            finished[0] = true;
-            valueLabel.setText(axis + ": " + value);
-            removeAll();
-            add(valueLabel, BorderLayout.CENTER);
-            revalidate();
-            repaint();
+            }, () -> {
+                valueLabel.setText(axis + ": " + value);
+                removeAll();
+                add(valueLabel, BorderLayout.CENTER);
+                revalidate();
+                repaint();
+            });
         }
     }
 
@@ -1043,7 +1226,78 @@ public class ActionTimelinePanel extends JPanel {
      * <p>轨道本身仍按节点数量增长，超出视口的部分由滚动条访问，
      * 避免完整轨道宽度参与外层窗口的 {@code pack()} 计算。</p>
      */
-    private static class TimelineTrackPanel extends JPanel implements Scrollable {
+    private final class TimelineTrackPanel extends JPanel implements Scrollable {
+        private MacroNode retryNode;
+        private JTextField retryEditor;
+
+        private TimelineTrackPanel() {
+            MouseAdapter listener = new MouseAdapter() {
+                @Override
+                public void mousePressed(MouseEvent event) {
+                    if (SwingUtilities.isLeftMouseButton(event)) {
+                        NodePanel hit = retryNodeAt(event.getPoint());
+                        if (hit == null) ActionTimelinePanel.this.requestFocusInWindow();
+                        else beginRetryDelayEdit(hit.macroNode);
+                    }
+                    showBackgroundPopup(event);
+                }
+
+                @Override
+                public void mouseReleased(MouseEvent event) {
+                    showBackgroundPopup(event);
+                }
+
+                @Override
+                public void mouseMoved(MouseEvent event) {
+                    setCursor(Cursor.getPredefinedCursor(retryNodeAt(event.getPoint()) == null
+                            ? Cursor.DEFAULT_CURSOR : Cursor.TEXT_CURSOR));
+                }
+
+                private void showBackgroundPopup(MouseEvent event) {
+                    if (event.isPopupTrigger()) {
+                        createContextMenu(null).show(TimelineTrackPanel.this, event.getX(), event.getY());
+                    }
+                }
+            };
+            addMouseListener(listener);
+            addMouseMotionListener(listener);
+        }
+
+        private NodePanel retryNodeAt(Point point) {
+            for (Component component : getComponents()) {
+                if (component instanceof NodePanel node && node.macroNode.getType() == NodeType.IMAGE_CHECK
+                        && !behaviorConditions(node.macroNode, ImageCheckBehavior.RETRY).isEmpty()
+                        && retryBounds(node).contains(point)) return node;
+            }
+            return null;
+        }
+
+        private Rectangle retryBounds(NodePanel node) {
+            FontMetrics metrics = getFontMetrics(getFont().deriveFont(Font.PLAIN, 11f));
+            int width = Math.max(68, metrics.stringWidth(formatDelay(
+                    MacroFlowFactory.findRetryDelay(node.macroNode))) + 16);
+            return new Rectangle(node.getX() + (node.getWidth() - width) / 2,
+                    node.getY() + node.getHeight() + SELF_LOOP_BOTTOM_OFFSET - 13, width, 26);
+        }
+
+        @Override
+        public void doLayout() {
+            super.doLayout();
+            positionRetryEditor();
+        }
+
+        private void positionRetryEditor() {
+            if (retryEditor == null) return;
+            for (Component component : getComponents()) {
+                if (component instanceof NodePanel node && node.macroNode == retryNode) {
+                    Rectangle bounds = retryBounds(node);
+                    bounds.width = Math.max(88, bounds.width);
+                    bounds.x = node.getX() + (node.getWidth() - bounds.width) / 2;
+                    retryEditor.setBounds(bounds);
+                    return;
+                }
+            }
+        }
 
         /**
          * 按成功和失败配置合并绘制自回路与终止标记。
@@ -1102,7 +1356,7 @@ public class ActionTimelinePanel extends JPanel {
             int outerRight = right + SELF_LOOP_SIDE_EXTENSION;
             int cornerRadius = 12;
 
-            String delayText = formatBranchDelay(retryDelay);
+            String delayText = formatDelay(retryDelay);
             graphics.setFont(getFont().deriveFont(Font.PLAIN, 11f));
             FontMetrics metrics = graphics.getFontMetrics();
             int labelHalfWidth = metrics.stringWidth(delayText) / 2;
@@ -1135,7 +1389,9 @@ public class ActionTimelinePanel extends JPanel {
             graphics.setColor(THEME.textSecondary());
             int textX = centerX - metrics.stringWidth(delayText) / 2;
             int textY = bottomY + (metrics.getAscent() - metrics.getDescent()) / 2;
-            graphics.drawString(delayText, textX, textY);
+            if (retryNode != node.macroNode || retryEditor == null) {
+                graphics.drawString(delayText, textX, textY);
+            }
             String conditionText = conditions + " · 重试";
             graphics.drawString(conditionText,
                     centerX - metrics.stringWidth(conditionText) / 2, bottomY - 12);
@@ -1156,11 +1412,6 @@ public class ActionTimelinePanel extends JPanel {
             graphics.drawRoundRect(x, y, width, 23, 8, 8);
             graphics.fillRect(x + 8, y + 8, 7, 7);
             graphics.drawString(text, x + 21, y + 16);
-        }
-
-        /** 将共用重试延迟格式化为时间线显示文本。 */
-        private String formatBranchDelay(long delay) {
-            return Math.max(0L, delay) + " ms";
         }
 
         @Override

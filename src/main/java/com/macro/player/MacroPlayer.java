@@ -30,6 +30,9 @@ import java.util.function.Consumer;
 
 public class MacroPlayer {
 
+    /** 单段毫秒转纳秒的安全边界；仅拆分等待，不限制总延迟。 */
+    private static final long MAX_DELAY_SEGMENT_MILLIS = Long.MAX_VALUE / 1_000_000L;
+
     /** 执行键盘、鼠标和滚轮输入的系统 Robot。 */
     private final Robot robot;
 
@@ -182,6 +185,15 @@ public class MacroPlayer {
     ) throws Exception {
         validateLoopCount(loopCount);
         validateFlow(flow);
+        // 全部图像节点的外部资源先检查完，再进入 PLAYING 或执行任何输入。
+        for (MacroNode node : flow.getNodeMap().values()) {
+            if (node.getType() == NodeType.IMAGE_CHECK) {
+                if (imageMatcher == null) {
+                    throw new IllegalArgumentException("图像识别节点尚未配置 ImageMatcher：" + node.getId());
+                }
+                imageMatcher.validate(node);
+            }
+        }
 
         FlowContext context = new FlowContext();
         state = PlayerState.PLAYING;
@@ -412,6 +424,28 @@ public class MacroPlayer {
             for (MacroBranch branch : node.getChildren()) {
                 validateBranch(nodeId, branch, nodeMap);
             }
+            // 已有分支合法仍不代表具备执行出口；必须在任何输入动作前补齐检查。
+            if (node.getType() == NodeType.ACTION) {
+                validateRequiredBranch(node, NodeResult.ALWAYS);
+            } else if (node.getType() == NodeType.IMAGE_CHECK) {
+                if (node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.EXECUTE) {
+                    validateRequiredBranch(node, NodeResult.FOUND);
+                }
+                if (node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.EXECUTE) {
+                    validateRequiredBranch(node, NodeResult.NOT_FOUND);
+                }
+            }
+        }
+    }
+
+    /** 复用运行时的精确条件及 ALWAYS 后备规则，不要求重试或终止存在普通后继。 */
+    private void validateRequiredBranch(MacroNode node, NodeResult result) {
+        try {
+            selectBranch(node, result);
+        } catch (IllegalStateException exception) {
+            throw new IllegalArgumentException(
+                    "节点 " + node.getId() + " 缺少结果 " + result + " 所需的后继分支", exception
+            );
         }
     }
 
@@ -525,6 +559,19 @@ public class MacroPlayer {
      * @return 是否可以继续执行后续节点
      */
     private boolean waitForDelay(long delay) throws InterruptedException {
+        long remainingMillis = delay;
+        do {
+            long segmentMillis = Math.min(remainingMillis, MAX_DELAY_SEGMENT_MILLIS);
+            if (!waitForDelaySegment(segmentMillis)) {
+                return false;
+            }
+            remainingMillis -= segmentMillis;
+        } while (remainingMillis > 0L);
+        return true;
+    }
+
+    /** 每段均在安全换算范围内，暂停时仍保留该段剩余时间，停止时立即唤醒。 */
+    private boolean waitForDelaySegment(long delay) throws InterruptedException {
         long remainingNanos = delay * 1_000_000L;
 
         synchronized (pauseLock) {

@@ -3,6 +3,8 @@ package com.macro.ui;
 import com.macro.constant.UiConstants;
 
 import com.macro.config.AppConfig;
+import com.macro.config.RecordingStartBehavior;
+import com.macro.config.TimelineInsertPosition;
 import com.macro.ui.dialog.AppMessageDialog;
 import com.macro.ui.filedialog.FileDialogException;
 import com.macro.ui.filedialog.FileDialogOptions;
@@ -45,8 +47,11 @@ public class SettingsDialog extends JDialog {
     private final JButton cancelButton = new JButton("取消");
     private final JButton saveButton = new JButton("保存");
     private final JCheckBox recordMouseMoveCheckBox = new JCheckBox("录制鼠标移动");
-    private final JCheckBox minimizeOnRecordingCheckBox =
-            new JCheckBox("开始录制时最小化主窗口");
+    private final JRadioButton recordingMinimizeButton = new JRadioButton("最小化");
+    private final JRadioButton recordingControlBarButton = new JRadioButton("控制栏");
+    private final JRadioButton recordingUnchangedButton = new JRadioButton("无");
+    private final JRadioButton insertBeforeButton = new JRadioButton("向前");
+    private final JRadioButton insertAfterButton = new JRadioButton("向后");
     private final JCheckBox minimizeOnPlayStartCheckBox =
             new JCheckBox("开始播放时最小化主窗口");
     private final JCheckBox restoreWindowAfterPlayStopCheckBox =
@@ -137,7 +142,13 @@ public class SettingsDialog extends JDialog {
         loadLastMacroOnStartupCheckBox.setSelected(appConfig.isLoadLastMacroOnStartup());
         recordMouseMoveCheckBox.setSelected(appConfig.isRecordMouseMove());
         mouseMoveIntervalSpinner.setValue(appConfig.getMouseMoveInterval());
-        minimizeOnRecordingCheckBox.setSelected(appConfig.isMinimizeOnRecording());
+        switch (appConfig.getRecordingStartBehavior()) {
+            case MINIMIZE -> recordingMinimizeButton.setSelected(true);
+            case CONTROL_BAR -> recordingControlBarButton.setSelected(true);
+            case NONE -> recordingUnchangedButton.setSelected(true);
+        }
+        insertBeforeButton.setSelected(appConfig.getTimelineInsertPosition() == TimelineInsertPosition.BEFORE);
+        insertAfterButton.setSelected(appConfig.getTimelineInsertPosition() == TimelineInsertPosition.AFTER);
         minimizeOnPlayStartCheckBox.setSelected(appConfig.isMinimizeOnPlayStart());
         restoreWindowAfterPlayStopCheckBox.setSelected(
                 appConfig.isRestoreWindowAfterPlayStop()
@@ -211,7 +222,8 @@ public class SettingsDialog extends JDialog {
                 loadLastMacroOnStartupCheckBox.isSelected(),
                 recordMouseMoveCheckBox.isSelected(),
                 mouseMoveInterval,
-                minimizeOnRecordingCheckBox.isSelected(),
+                getSelectedRecordingStartBehavior(),
+                insertAfterButton.isSelected() ? TimelineInsertPosition.AFTER : TimelineInsertPosition.BEFORE,
                 minimizeOnPlayStartCheckBox.isSelected(),
                 restoreWindowAfterPlayStopCheckBox.isSelected()
         );
@@ -220,6 +232,15 @@ public class SettingsDialog extends JDialog {
             return;
         }
         dispose();
+    }
+
+    /** 仅在保存时读取互斥选项，取消设置不会修改配置。 */
+    private RecordingStartBehavior getSelectedRecordingStartBehavior() {
+        if (recordingControlBarButton.isSelected()) {
+            return RecordingStartBehavior.CONTROL_BAR;
+        }
+        return recordingUnchangedButton.isSelected()
+                ? RecordingStartBehavior.NONE : RecordingStartBehavior.MINIMIZE;
     }
 
     /** 校验并按需创建设置中的目录。 */
@@ -278,8 +299,7 @@ public class SettingsDialog extends JDialog {
             pages.add(new RecordingSettingsPanel(), SettingsSection.RECORDING.name());
             pages.add(new PlaybackSettingsPanel(), SettingsSection.PLAYBACK.name());
             pages.add(new FileSettingsPanel(), SettingsSection.FILE.name());
-            pages.add(createPlaceholderPanel("界面设置", "主题、语言和窗口行为选项将在后续版本中提供。"),
-                    SettingsSection.INTERFACE.name());
+            pages.add(new InterfaceSettingsPanel(), SettingsSection.INTERFACE.name());
 
             JScrollPane scrollPane = new JScrollPane(
                     pages,
@@ -399,6 +419,7 @@ public class SettingsDialog extends JDialog {
 
             JPanel intervalRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0));
             intervalRow.setOpaque(false);
+            intervalRow.setAlignmentX(Component.LEFT_ALIGNMENT);
             JLabel intervalLabel = createNormalLabel("鼠标移动采样间隔：");
             JLabel unitLabel = createSecondaryLabel("ms");
             mouseMoveIntervalSpinner.setFont(FONT_NORMAL);
@@ -411,15 +432,22 @@ public class SettingsDialog extends JDialog {
             intervalRow.add(mouseMoveIntervalSpinner);
             intervalRow.add(Box.createHorizontalStrut(10));
             intervalRow.add(unitLabel);
+            // 避免该行默认居中对齐的最大宽度将同一卡片内的标签和复选框推向中间。
+            intervalRow.setMaximumSize(new Dimension(Integer.MAX_VALUE,
+                    intervalRow.getPreferredSize().height));
             card.add(intervalRow);
             return card;
         }
 
         private JPanel createRecordingBehaviorCard() {
             RoundedPanel card = createSettingsCard("录制行为");
-            styleCheckBox(minimizeOnRecordingCheckBox);
             styleCheckBox(restoreWindowAfterRecordingCheckBox);
-            card.add(minimizeOnRecordingCheckBox);
+            JLabel label = createNormalLabel("开始录制后");
+            label.setAlignmentX(Component.LEFT_ALIGNMENT);
+            card.add(label);
+            card.add(Box.createVerticalStrut(8));
+            card.add(createRadioRow(recordingMinimizeButton, recordingControlBarButton,
+                    recordingUnchangedButton));
             card.add(Box.createVerticalStrut(12));
             card.add(restoreWindowAfterRecordingCheckBox);
             return card;
@@ -436,6 +464,25 @@ public class SettingsDialog extends JDialog {
             hint.setBorder(new EmptyBorder(0, 28, 0, 0));
             card.add(hint);
             return card;
+        }
+    }
+
+    /** 界面设置中只增加时间线默认插入方向，不改变显式位置操作。 */
+    private class InterfaceSettingsPanel extends JPanel {
+        private InterfaceSettingsPanel() {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            setOpaque(false);
+            RoundedPanel card = createSettingsCard("时间线");
+            JLabel label = createNormalLabel("默认插入位置");
+            label.setAlignmentX(Component.LEFT_ALIGNMENT);
+            card.add(label);
+            card.add(Box.createVerticalStrut(8));
+            card.add(createRadioRow(insertBeforeButton, insertAfterButton));
+            card.add(Box.createVerticalStrut(8));
+            JLabel hint = createSecondaryLabel("向前插入到选中节点之前，向后插入到选中节点之后。");
+            hint.setAlignmentX(Component.LEFT_ALIGNMENT);
+            card.add(hint);
+            add(card);
         }
     }
 
@@ -490,13 +537,24 @@ public class SettingsDialog extends JDialog {
         }
     }
 
-    private JPanel createPlaceholderPanel(String title, String description) {
-        JPanel panel = new JPanel(new BorderLayout());
-        panel.setOpaque(false);
-        RoundedPanel card = createSettingsCard(title);
-        card.add(createSecondaryLabel(description));
-        panel.add(card, BorderLayout.NORTH);
-        return panel;
+    /** 为同一设置项创建左对齐、互斥且使用公共主题的单选行。 */
+    private JPanel createRadioRow(JRadioButton... buttons) {
+        JPanel row = new JPanel();
+        row.setLayout(new BoxLayout(row, BoxLayout.X_AXIS));
+        row.setOpaque(false);
+        row.setAlignmentX(Component.LEFT_ALIGNMENT);
+        ButtonGroup group = new ButtonGroup();
+        for (JRadioButton button : buttons) {
+            if (row.getComponentCount() > 0) {
+                row.add(Box.createHorizontalStrut(18));
+            }
+            ComponentStyleUtil.styleRadioButton(button);
+            button.setFont(FONT_NORMAL);
+            group.add(button);
+            row.add(button);
+        }
+        row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+        return row;
     }
 
     private RoundedPanel createSettingsCard(String title) {
@@ -569,7 +627,7 @@ public class SettingsDialog extends JDialog {
         RECORDING("录制", "录制设置", "配置录制相关的行为和选项", SettingsIconType.RECORD),
         PLAYBACK("播放", "播放设置", "配置宏播放相关的行为和选项", SettingsIconType.PLAY),
         FILE("文件", "文件设置", "配置宏文件、截图的保存位置和启动加载行为", SettingsIconType.FILE),
-        INTERFACE("界面", "界面设置", "配置应用的外观与窗口行为", SettingsIconType.INTERFACE);
+        INTERFACE("界面", "界面设置", "配置界面和时间线编辑行为", SettingsIconType.INTERFACE);
 
         private final String navigationText;
         private final String title;

@@ -74,10 +74,33 @@
             <artifactId>opencv</artifactId>
             <version>4.9.0-0</version>
         </dependency>
+
+        <!-- 为现有独立检查提供标准测试入口，不进入应用运行时依赖。 -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <version>5.10.5</version>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
         <plugins>
+
+            <!-- 固定当前已有版本，使用 JUnit Platform，防止零测试仍返回成功。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <version>3.1.2</version>
+                <configuration>
+                    <failIfNoTests>true</failIfNoTests>
+                    <failIfNoSpecifiedTests>true</failIfNoSpecifiedTests>
+                    <argLine>-Dfile.encoding=UTF-8</argLine>
+                    <systemPropertyVariables>
+                        <macro.test.sandboxRoot>${project.build.directory}/test-sandboxes</macro.test.sandboxRoot>
+                    </systemPropertyVariables>
+                </configuration>
+            </plugin>
 
             <!-- 普通 Java JAR -->
             <plugin>

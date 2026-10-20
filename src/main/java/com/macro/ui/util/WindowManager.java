@@ -25,7 +25,7 @@ public final class WindowManager {
 
     /** 恢复最小化窗口，同时保留最大化等其他扩展状态。 */
     public static void restore(JFrame frame) {
-        if (frame == null || !isMinimized(frame)) {
+        if (!isMinimized(frame)) {
             return;
         }
         frame.setExtendedState(frame.getExtendedState() & ~Frame.ICONIFIED);

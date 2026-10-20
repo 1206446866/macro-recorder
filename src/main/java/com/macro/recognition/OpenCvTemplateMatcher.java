@@ -18,6 +18,8 @@ public final class OpenCvTemplateMatcher {
 
     private static final int OPAQUE_ALPHA_THRESHOLD = 220;
     private static final double OVERLAP_MERGE_RATIO = 0.40;
+    /** 仅限定 100% 阈值下原像素复核的候选范围，不作为接受匹配的容差。 */
+    private static final double PERFECT_MATCH_RECHECK_ERROR_RATIO = 1e-6;
     private static final Object LOAD_LOCK = new Object();
     private static final AtomicBoolean PRELOAD_STARTED = new AtomicBoolean();
     private static volatile boolean loaded;
@@ -139,9 +141,9 @@ public final class OpenCvTemplateMatcher {
 
             return collectResults(
                     resultMat,
-                    templateWidth,
-                    templateHeight,
-                    templateData.opaquePixelCount(),
+                    source,
+                    template,
+                    templateData,
                     threshold,
                     maxResults
             );
@@ -175,19 +177,21 @@ public final class OpenCvTemplateMatcher {
 
     private SearchResult collectResults(
             Mat resultMat,
-            int templateWidth,
-            int templateHeight,
-            int opaquePixelCount,
+            BufferedImage source,
+            BufferedImage template,
+            TemplateData templateData,
             double threshold,
             int maxResults
     ) {
+        int templateWidth = template.getWidth();
+        int templateHeight = template.getHeight();
         int rows = resultMat.rows();
         int columns = resultMat.cols();
         int resultCount = Math.multiplyExact(rows, columns);
         float[] errors = new float[resultCount];
         resultMat.get(0, 0, errors);
 
-        double maximumSquaredError = opaquePixelCount
+        double maximumSquaredError = templateData.opaquePixelCount()
                 * 3.0
                 * 255.0
                 * 255.0;
@@ -210,6 +214,12 @@ public final class OpenCvTemplateMatcher {
 
             int x = index % columns;
             int y = index / columns;
+            if (threshold == 1.0
+                    && error <= maximumSquaredError * PERFECT_MATCH_RECHECK_ERROR_RATIO) {
+                // 已有精确满分且结果已截断时，剩余候选无法改善最佳结果。
+                if (truncated && bestError == 0.0) continue;
+                error = exactSquaredError(source, template, x, y, templateData.alphaThreshold());
+            }
             double similarity = toSimilarity(error, maximumSquaredError);
             if (error < bestError) {
                 bestError = error;
@@ -237,6 +247,24 @@ public final class OpenCvTemplateMatcher {
                 MatchResult::similarity
         ).reversed());
         return new SearchResult(matches, bestCandidate, truncated);
+    }
+
+    /** 用与 OpenCV 转换相同的 RGB 和透明掩码复核满分候选，整数累加不会发生浮点舍入。 */
+    private long exactSquaredError(BufferedImage source, BufferedImage template,
+            int sourceX, int sourceY, int alphaThreshold) {
+        long squaredError = 0L;
+        for (int y = 0; y < template.getHeight(); y++) {
+            for (int x = 0; x < template.getWidth(); x++) {
+                int expected = template.getRGB(x, y);
+                if ((expected >>> 24) < alphaThreshold) continue;
+                int actual = source.getRGB(sourceX + x, sourceY + y);
+                int red = (actual >> 16 & 0xFF) - (expected >> 16 & 0xFF);
+                int green = (actual >> 8 & 0xFF) - (expected >> 8 & 0xFF);
+                int blue = (actual & 0xFF) - (expected & 0xFF);
+                squaredError += red * red + green * green + blue * blue;
+            }
+        }
+        return squaredError;
     }
 
     /** 将平方差转换为接近现有 Java 匹配器语义的 0 到 1 相似度。 */
@@ -367,7 +395,8 @@ public final class OpenCvTemplateMatcher {
                 imageMat,
                 maskMat,
                 opaquePixelCount,
-                opaquePixelCount < argb.length
+                opaquePixelCount < argb.length,
+                alphaThreshold
         );
     }
 
@@ -411,7 +440,8 @@ public final class OpenCvTemplateMatcher {
             Mat image,
             Mat mask,
             int opaquePixelCount,
-            boolean maskRequired
+            boolean maskRequired,
+            int alphaThreshold
     ) {
     }
 

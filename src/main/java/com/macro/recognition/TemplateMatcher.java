@@ -187,17 +187,17 @@ public final class TemplateMatcher {
                     candidate.y(),
                     detailSamples
             );
+            MatchResult result = MatchResult.candidate(
+                    similarity >= threshold,
+                    similarity,
+                    new Rectangle(candidate.x(), candidate.y(), templateWidth, templateHeight)
+            );
             if (bestCandidate == null || similarity > bestCandidate.similarity()) {
-                bestCandidate = MatchResult.candidate(
-                        similarity >= threshold,
-                        similarity,
-                        new Rectangle(
-                                candidate.x(),
-                                candidate.y(),
-                                templateWidth,
-                                templateHeight
-                        )
-                );
+                bestCandidate = result;
+            }
+            if (result.matched()) {
+                // 达标回退候选与普通扫描共用去重、最佳结果替换和数量上限。
+                truncated |= addOrMergeMatch(matches, result, maxResults);
             }
         }
 

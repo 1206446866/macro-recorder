@@ -18,6 +18,7 @@ import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
 import com.macro.ui.util.ComponentStyleUtil;
 import com.macro.ui.util.NumericInputUtil;
+import com.macro.util.ImageTemplatePathUtil;
 
 import javax.imageio.ImageIO;
 import javax.swing.*;
@@ -90,6 +91,7 @@ public final class ActionEditorDialog extends JDialog {
 
     private final Mode mode;
     private final FileDialogService fileDialogs;
+    private final File templateBaseDirectory;
 
     /** 编辑模式下的原节点；创建模式下为空。 */
     private final MacroNode sourceNode;
@@ -128,6 +130,11 @@ public final class ActionEditorDialog extends JDialog {
         return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null);
     }
 
+    public static ActionEditorDialog create(Window owner, File macroDirectory, Consumer<MacroNode> onSave) {
+        return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null,
+                FileDialogServiceFactory.create(), macroDirectory);
+    }
+
     /** 允许界面回归测试注入文件选择结果，生产入口始终由平台工厂创建服务。 */
     static ActionEditorDialog create(Window owner, Consumer<MacroNode> onSave, FileDialogService fileDialogs) {
         return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null, fileDialogs);
@@ -151,6 +158,12 @@ public final class ActionEditorDialog extends JDialog {
         return new ActionEditorDialog(owner, Mode.EDIT, node, onSave, onDelete);
     }
 
+    public static ActionEditorDialog edit(Window owner, MacroNode node, File macroDirectory,
+            Consumer<MacroNode> onSave, Consumer<Boolean> onDelete) {
+        return new ActionEditorDialog(owner, Mode.EDIT, node, onSave, onDelete,
+                FileDialogServiceFactory.create(), macroDirectory);
+    }
+
     private ActionEditorDialog(
             Window owner,
             Mode mode,
@@ -163,6 +176,12 @@ public final class ActionEditorDialog extends JDialog {
 
     private ActionEditorDialog(Window owner, Mode mode, MacroNode sourceNode,
             Consumer<MacroNode> onSave, Consumer<Boolean> onDelete, FileDialogService fileDialogs) {
+        this(owner, mode, sourceNode, onSave, onDelete, fileDialogs, null);
+    }
+
+    private ActionEditorDialog(Window owner, Mode mode, MacroNode sourceNode,
+            Consumer<MacroNode> onSave, Consumer<Boolean> onDelete, FileDialogService fileDialogs,
+            File templateBaseDirectory) {
         super(owner, mode == Mode.CREATE ? "插入动作" : "编辑动作",
                 ModalityType.APPLICATION_MODAL);
 
@@ -175,6 +194,7 @@ public final class ActionEditorDialog extends JDialog {
 
         this.mode = mode;
         this.fileDialogs = java.util.Objects.requireNonNull(fileDialogs);
+        this.templateBaseDirectory = templateBaseDirectory;
         this.sourceNode = sourceNode;
         this.onSave = onSave;
         this.onDelete = onDelete;
@@ -747,14 +767,14 @@ public final class ActionEditorDialog extends JDialog {
                     ? ImageCheckBehavior.EXECUTE : config.getSuccessBehavior());
             failureBehavior.setSelectedItem(config == null
                     ? ImageCheckBehavior.RETRY : config.getFailureBehavior());
-            if (config == null) {
+            if (config == null || config.getImagePath() == null || config.getImagePath().isBlank()) {
                 templateFile = null;
                 templateButton.setText("选择模板 PNG");
                 templateButton.setToolTipText(null);
                 thresholdSpinner.setValue(90);
                 return;
             }
-            templateFile = new File(config.getImagePath());
+            templateFile = ImageTemplatePathUtil.resolve(config.getImagePath(), templateBaseDirectory).toFile();
             templateButton.setText(templateFile.getName());
             templateButton.setToolTipText(templateFile.getAbsolutePath());
             int thresholdPercent = (int) Math.round(
@@ -804,8 +824,8 @@ public final class ActionEditorDialog extends JDialog {
         }
 
         private MacroNode createImageNode(long retryDelay) {
-            if (templateFile == null || !templateFile.isFile()) {
-                throw new IllegalArgumentException("请选择有效的模板 PNG");
+            if (templateFile == null) {
+                throw new IllegalArgumentException("请选择模板 PNG");
             }
             int thresholdPercent = NumericInputUtil.commitSpinnerInt(thresholdSpinner);
             ImageCheckConfig config = new ImageCheckConfig(
