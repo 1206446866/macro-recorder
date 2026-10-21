@@ -9,7 +9,6 @@ import com.sun.jna.Pointer;
 import com.sun.jna.Structure;
 import com.sun.jna.platform.win32.User32;
 import com.sun.jna.platform.win32.WinDef.HWND;
-import com.sun.jna.platform.win32.WinDef.HDC;
 import com.sun.jna.platform.win32.WinDef.LPARAM;
 import com.sun.jna.platform.win32.WinDef.LRESULT;
 import com.sun.jna.platform.win32.WinDef.POINT;
@@ -23,12 +22,14 @@ import javax.swing.AbstractButton;
 import javax.swing.BorderFactory;
 import javax.swing.JComponent;
 import javax.swing.JFrame;
+import javax.swing.JRootPane;
 import javax.swing.SwingUtilities;
 import javax.swing.border.Border;
 import java.awt.Color;
+import java.awt.Container;
 import java.awt.Dimension;
+import java.awt.Insets;
 import java.awt.Rectangle;
-import java.awt.Toolkit;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -37,34 +38,32 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 将录制控制行放入 DWM 混合标题栏，系统仍负责边框及最小化、最大化、关闭按钮。
+ * 将录制控制行放入 DWM 混合标题栏，保留 DWM 边框；标题内容与唯一最小化按钮由 Swing 绘制。
  * 原生消息线程只读取布局快照；Swing 组件及业务回调始终由事件派发线程处理。
  */
 public final class WindowsRecordingTitleBar {
     private static final int GWLP_WNDPROC = -4;
+    private static final int GWL_STYLE = -16;
+    private static final int SYSTEM_BUTTON_STYLES = 0x00080000 | 0x00020000 | 0x00010000;
     private static final int WM_SIZE = 0x0005;
     private static final int WM_ACTIVATE = 0x0006;
     private static final int WM_WINDOWPOSCHANGED = 0x0047;
+    private static final int WM_WINDOWPOSCHANGING = 0x0046;
+    private static final int WM_SIZING = 0x0214;
+    private static final int WM_EXITSIZEMOVE = 0x0232;
+    private static final int WM_GETMINMAXINFO = 0x0024;
     private static final int WM_NCCALCSIZE = 0x0083;
     private static final int WM_NCHITTEST = 0x0084;
     private static final int WM_NCDESTROY = 0x0082;
-    private static final int WM_NCMOUSELEAVE = 0x02A2;
     private static final int WM_DPICHANGED = 0x02E0;
     private static final int WM_DWMCOMPOSITIONCHANGED = 0x031E;
-    private static final int WM_GETTITLEBARINFOEX = 0x033F;
     private static final int HTCLIENT = 1;
     private static final int HTCAPTION = 2;
-    private static final int HTMINBUTTON = 8;
-    private static final int HTMAXBUTTON = 9;
-    private static final int HTCLOSE = 20;
-    private static final int HTTOP = 12;
-    private static final int HTTOPLEFT = 13;
-    private static final int HTTOPRIGHT = 14;
-    private static final int SM_CYCAPTION = 4;
+    private static final int HTLEFT = 10;
+    private static final int HTRIGHT = 11;
     private static final int SM_CYSIZEFRAME = 33;
     private static final int SM_CXSIZEFRAME = 32;
     private static final int SM_CXPADDEDBORDER = 92;
-    private static final int DWMWA_CAPTION_BUTTON_BOUNDS = 5;
     private static final int DWMWA_CAPTION_COLOR = 35;
     private static final int DWMWA_TEXT_COLOR = 36;
     private static final int FRAME_CHANGE_FLAGS = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
@@ -78,9 +77,10 @@ public final class WindowsRecordingTitleBar {
     private final WinUser.WindowProc windowProc = this::handleMessage;
     private final AtomicBoolean refreshQueued = new AtomicBoolean();
     private final AtomicBoolean marginsRefreshRequested = new AtomicBoolean();
-    private final AtomicBoolean clearQueued = new AtomicBoolean();
+    private final AtomicBoolean finalRepaintRequested = new AtomicBoolean();
+
     private volatile LayoutSnapshot layout = LayoutSnapshot.EMPTY;
-    private volatile Rectangle systemButtonBounds = new Rectangle();
+
     private volatile int captionHeight;
     private volatile boolean active;
     private volatile HWND hwnd;
@@ -88,8 +88,8 @@ public final class WindowsRecordingTitleBar {
     private Pointer installedProc;
     private Border originalBorder;
     private Dimension originalPreferredSize;
-    private int reservedWidth = -1;
-    private int appliedCaptionHeight = -1;
+    private int originalButtonStyles;
+    private boolean stylesChanged;
     private int appliedDpi;
     private boolean appliedMaximized;
     private int originalCaptionColor = -1;
@@ -123,9 +123,6 @@ public final class WindowsRecordingTitleBar {
         boolean installed = false;
         try {
             // 原生依赖先加载，避免安装消息过程后才发现所需系统接口不可用。
-            RECT initialBounds = new RECT();
-            NativeDwm.INSTANCE.DwmGetWindowAttribute(hwnd, DWMWA_CAPTION_BUTTON_BOUNDS,
-                    initialBounds.getPointer(), initialBounds.size());
             NativeUser.INSTANCE.GetDpiForWindow(hwnd);
             originalCaptionColor = readDwmColor(DWMWA_CAPTION_COLOR);
             originalTextColor = readDwmColor(DWMWA_TEXT_COLOR);
@@ -139,6 +136,10 @@ public final class WindowsRecordingTitleBar {
             installed = true;
             INSTALLED.add(this);
             active = true;
+            int style = User32.INSTANCE.GetWindowLong(hwnd, GWL_STYLE);
+            originalButtonStyles = style & SYSTEM_BUTTON_STYLES;
+            setWindowStyle(style & ~SYSTEM_BUTTON_STYLES);
+            stylesChanged = true;
             refresh();
             applyMargins();
             frameChanged();
@@ -169,13 +170,26 @@ public final class WindowsRecordingTitleBar {
         }
     }
 
-    /** 更新系统按钮保留区与点击区域快照；重复调用不会反复重算非客户区。 */
+    /** 更新 DPI 边距与点击区域快照；重复调用不会反复重算非客户区。 */
     public void refresh() {
+        refresh(false);
+    }
+
+    private void refresh(boolean forceRepaint) {
         requireEdt();
         if (!active || hwnd == null || !User32.INSTANCE.IsWindow(hwnd)) return;
-        applyCaptionColors();
+        boolean appearanceChanged = applyCaptionColors();
         if (User32.INSTANCE.IsWindowVisible(hwnd) && !NativeUser.INSTANCE.IsIconic(hwnd)) {
-            updateMetrics();
+            appearanceChanged |= updateMetrics();
+        }
+        boolean repairedLayout = false;
+        if (!NativeUser.INSTANCE.IsIconic(hwnd) && needsLayout()) {
+            // AWT 通常已完成布局；只修复失效或仍保留旧尺寸的容器。
+            // 根面板可能自认为有效，单独 invalidate JFrame 不会遍历有效子树。
+            frame.getRootPane().invalidate();
+            frame.invalidate();
+            frame.validate();
+            repairedLayout = true;
         }
         List<Rectangle> buttonBounds = new ArrayList<>();
         for (AbstractButton button : interactiveComponents) {
@@ -187,31 +201,36 @@ public final class WindowsRecordingTitleBar {
         Rectangle titleBounds = SwingUtilities.isDescendingFrom(titleBar, frame.getRootPane())
                 ? SwingUtilities.convertRectangle(titleBar.getParent(), titleBar.getBounds(), frame.getRootPane())
                 : new Rectangle();
-        LayoutSnapshot updated = new LayoutSnapshot(titleBounds, List.copyOf(buttonBounds));
-        LayoutSnapshot previous = layout;
+        Dimension minimum = new Dimension(frame.getMinimumSize());
+        if (minimum.height > 0) {
+            minimum.height = titleBar.getPreferredSize().height + frame.getInsets().top + frame.getInsets().bottom;
+        }
+        LayoutSnapshot updated = new LayoutSnapshot(titleBounds, List.copyOf(buttonBounds), minimum);
+        boolean boundsChanged = !updated.equals(layout);
         layout = updated;
-        if (!updated.equals(previous)) afterCaptionPaint();
+        if (forceRepaint || appearanceChanged || repairedLayout || boundsChanged) titleBar.repaint();
     }
 
-    /**
-     * 在标题行完成绘制后调用。延后到 Swing 双缓冲提交之后，为真实 DWM 系统按钮保留透明区域。
-     * 不绘制按钮图标，也不触发新的 Swing 重绘，避免形成重绘循环。
-     */
-    public void afterCaptionPaint() {
-        if (!active || !clearQueued.compareAndSet(false, true)) return;
-        SwingUtilities.invokeLater(() -> {
-            clearQueued.set(false);
-            clearSystemButtonSurface();
-        });
+    /** 比较 Swing 客户区及各级内容尺寸；不因重复尺寸消息无条件重新布局。 */
+    private boolean needsLayout() {
+        JRootPane root = frame.getRootPane();
+        Container content = frame.getContentPane();
+        Insets frameInsets = frame.getInsets();
+        int rootWidth = Math.max(0, frame.getWidth() - frameInsets.left - frameInsets.right);
+        int rootHeight = Math.max(0, frame.getHeight() - frameInsets.top - frameInsets.bottom);
+        Insets rootInsets = root.getInsets();
+        int width = Math.max(0, rootWidth - rootInsets.left - rootInsets.right);
+        int height = Math.max(0, rootHeight - rootInsets.top - rootInsets.bottom);
+        int menuHeight = root.getJMenuBar() != null && root.getJMenuBar().isVisible()
+                ? root.getJMenuBar().getPreferredSize().height : 0;
+        return !frame.isValid() || !root.isValid() || !content.isValid() || !titleBar.isValid()
+                || root.getWidth() != rootWidth || root.getHeight() != rootHeight
+                || root.getLayeredPane().getWidth() != width || root.getLayeredPane().getHeight() != height
+                || content.getWidth() != width || content.getHeight() != Math.max(0, height - menuHeight);
     }
 
     public boolean isActive() {
         return active;
-    }
-
-    /** 返回窗口相对的物理像素矩形，调用方不能修改内部布局缓存。 */
-    public Rectangle getSystemButtonBounds() {
-        return new Rectangle(systemButtonBounds);
     }
 
     /** 返回控制行使用的 Swing 逻辑像素高度。 */
@@ -219,75 +238,89 @@ public final class WindowsRecordingTitleBar {
         return captionHeight;
     }
 
-    private void updateMetrics() {
+    private boolean updateMetrics() {
         int dpi = windowDpi();
         double scale = dpi / 96.0;
-        RECT window = new RECT();
-        RECT buttons = new RECT();
-        if (!User32.INSTANCE.GetWindowRect(hwnd, window)) return;
-        int result = NativeDwm.INSTANCE.DwmGetWindowAttribute(hwnd, DWMWA_CAPTION_BUTTON_BOUNDS,
-                buttons.getPointer(), buttons.size());
-        buttons.read();
-        if (result < 0 || buttons.right <= buttons.left || buttons.bottom <= buttons.top
-                || buttons.left < 0 || buttons.right > window.right - window.left + 2) {
-            if (systemButtonBounds.isEmpty()) {
-                throw new IllegalStateException("无法取得 Windows 标题栏按钮区域");
-            }
-            return;
-        }
-        systemButtonBounds = buttons.toRectangle();
-        int nativeCaption = Math.max(NativeUser.INSTANCE.GetSystemMetricsForDpi(SM_CYCAPTION, dpi)
-                + topResizeBorder(dpi), buttons.bottom);
-        int nativeHeight = Math.max(1, (int) Math.ceil(nativeCaption / scale));
-        int reserve = (int) Math.ceil((window.right - window.left - buttons.left) / scale) + 6;
         boolean dpiChanged = dpi != appliedDpi;
         appliedDpi = dpi;
         boolean maximized = NativeUser.INSTANCE.IsZoomed(hwnd);
-        if (reserve != reservedWidth || nativeHeight != appliedCaptionHeight || dpiChanged
-                || maximized != appliedMaximized) {
-            reservedWidth = reserve;
-            appliedCaptionHeight = nativeHeight;
+        if (dpiChanged || maximized != appliedMaximized) {
             appliedMaximized = maximized;
             int topPadding = maximized ? 0
                     : (int) Math.ceil(topResizeBorder(dpi) / scale);
             titleBar.setBorder(BorderFactory.createCompoundBorder(originalBorder,
-                    BorderFactory.createEmptyBorder(topPadding, 0, 0, reserve)));
+                    BorderFactory.createEmptyBorder(topPadding, 0, 0, 0)));
             titleBar.setPreferredSize(null);
             Dimension preferred = titleBar.getPreferredSize();
-            captionHeight = Math.max(nativeHeight, preferred.height);
-            titleBar.setPreferredSize(new Dimension(preferred.width, captionHeight));
+            captionHeight = preferred.height;
             titleBar.revalidate();
             applyMargins();
+            return true;
         }
+        return false;
     }
 
     private LRESULT handleMessage(HWND window, int message, WPARAM wParam, LPARAM lParam) {
+        if (active && message == WM_GETMINMAXINFO) {
+            LRESULT result = callOriginal(window, message, wParam, lParam);
+            Pointer information = new Pointer(lParam.longValue());
+            Dimension minimum = layout.minimumSize();
+            double scale = windowDpi() / 96.0;
+            // MINMAXINFO.ptMinTrackSize 位于第四个 POINT；原生最小拖动尺寸使用物理像素。
+            information.setInt(24, Math.max(information.getInt(24), (int) Math.ceil(minimum.width * scale)));
+            if (minimum.height > 0) {
+                int fixedHeight = (int) Math.ceil(minimum.height * scale);
+                information.setInt(28, fixedHeight); // ptMinTrackSize.y
+                information.setInt(36, fixedHeight); // ptMaxTrackSize.y
+                information.setInt(12, fixedHeight); // ptMaxSize.y，阻止系统贴靠撑高窗口
+            }
+            return result;
+        }
+        if (active && message == WM_SIZING && layout.minimumSize().height > 0) {
+            Pointer rectangle = new Pointer(lParam.longValue());
+            Rectangle proposed = new Rectangle(rectangle.getInt(0), rectangle.getInt(4),
+                    rectangle.getInt(8) - rectangle.getInt(0), rectangle.getInt(12) - rectangle.getInt(4));
+            double scale = windowDpi() / 96.0;
+            Dimension minimum = layout.minimumSize();
+            Rectangle constrained = RecordingBarGeometry.constrainSizing(proposed, wParam.intValue(),
+                    new Dimension((int) Math.ceil(minimum.width * scale), (int) Math.ceil(minimum.height * scale)));
+            rectangle.setInt(0, constrained.x);
+            rectangle.setInt(4, constrained.y);
+            rectangle.setInt(8, constrained.x + constrained.width);
+            rectangle.setInt(12, constrained.y + constrained.height);
+            // 保留原 AWT 的动态布局及 D3D/OGL 绘图表面更新，不能只转交 DefWindowProc。
+            callOriginal(window, message, wParam, lParam);
+            // 本层已处理尺寸矩形，按 WM_SIZING 契约返回 TRUE，不沿用默认过程的返回值。
+            return new LRESULT(1);
+        }
+        if (active && message == WM_WINDOWPOSCHANGING && layout.minimumSize().height > 0
+                && !NativeUser.INSTANCE.IsIconic(window)) {
+            LRESULT result = callOriginal(window, message, wParam, lParam);
+            Pointer position = new Pointer(lParam.longValue());
+            int offset = Native.POINTER_SIZE * 2;
+            if ((position.getInt(offset + 16) & 0x0001) == 0 && position.getInt(offset + 12) > 0) {
+                double scale = windowDpi() / 96.0;
+                Dimension minimum = layout.minimumSize();
+                position.setInt(offset + 8, Math.max(position.getInt(offset + 8), (int) Math.ceil(minimum.width * scale)));
+                position.setInt(offset + 12, (int) Math.ceil(minimum.height * scale));
+            }
+            return result;
+        }
         if (active && message == WM_NCCALCSIZE) {
             Pointer rectangle = new Pointer(lParam.longValue());
             int windowTop = rectangle.getInt(Integer.BYTES);
             callOriginal(window, message, wParam, lParam);
-            // 顶部不能留下非客户区，否则部分 Windows 11 的 DWM 不再处理系统按钮命中。
-            // 左、右、下仍使用系统边框；顶边缩放命中由下面的消息分支补充。
+            // 顶部由自绘内容占用；左右及底部继续保留系统边框。
+            // 顶边保留拖动；下面的命中分支将角落限制为水平缩放。
             rectangle.setInt(Integer.BYTES, windowTop + (NativeUser.INSTANCE.IsZoomed(window)
                     ? topResizeBorder(windowDpi()) : 0));
             return new LRESULT(0);
         }
         if (active && message == WM_NCHITTEST) {
-            try (Memory value = new Memory(Native.POINTER_SIZE)) {
-                boolean handled = NativeDwm.INSTANCE.DwmDefWindowProc(window, message, wParam, lParam, value);
-                long hit = Native.POINTER_SIZE == Long.BYTES ? value.getLong(0) : value.getInt(0);
-                if (handled && isSystemButton(hit)) return new LRESULT(hit);
-            }
             LRESULT original = callOriginal(window, message, wParam, lParam);
             long hit = original.longValue();
-            if (isSystemButton(hit)) return original;
             int x = (short) (lParam.longValue() & 0xFFFF);
             int y = (short) ((lParam.longValue() >>> 16) & 0xFFFF);
-            // 部分 Windows 11 最大化窗口的 DWM 命中结果为空，使用系统提供的各按钮真实矩形补充。
-            if (NativeUser.INSTANCE.IsZoomed(window)) {
-                int systemHit = titleBarInfoHit(window, x, y);
-                if (systemHit != 0) return new LRESULT(systemHit);
-            }
             if (!NativeUser.INSTANCE.IsZoomed(window)) {
                 RECT bounds = new RECT();
                 int dpi = windowDpi();
@@ -295,10 +328,10 @@ public final class WindowsRecordingTitleBar {
                         && y >= bounds.top && y < bounds.top + topResizeBorder(dpi)) {
                     int cornerWidth = NativeUser.INSTANCE.GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi)
                             + NativeUser.INSTANCE.GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);
-                    return new LRESULT(x < bounds.left + cornerWidth ? HTTOPLEFT
-                            : x >= bounds.right - cornerWidth ? HTTOPRIGHT : HTTOP);
+                    return new LRESULT(x < bounds.left + cornerWidth ? HTLEFT
+                            : x >= bounds.right - cornerWidth ? HTRIGHT : HTCAPTION);
                 }
-                if (hit >= 10 && hit <= 17) return original;
+                if (hit >= 10 && hit <= 17) return new LRESULT(RecordingBarGeometry.horizontalHit((int) hit));
             }
             POINT origin = new POINT();
             if (!NativeUser.INSTANCE.ClientToScreen(window, origin)) return original;
@@ -312,11 +345,6 @@ public final class WindowsRecordingTitleBar {
             }
             return original;
         }
-        if (active && message == WM_NCMOUSELEAVE) {
-            try (Memory value = new Memory(Native.POINTER_SIZE)) {
-                NativeDwm.INSTANCE.DwmDefWindowProc(window, message, wParam, lParam, value);
-            }
-        }
         LRESULT result = callOriginal(window, message, wParam, lParam);
         if (message == WM_NCDESTROY) {
             active = false;
@@ -324,22 +352,25 @@ public final class WindowsRecordingTitleBar {
             SwingUtilities.invokeLater(() -> INSTALLED.remove(this));
         } else if (active && (message == WM_SIZE || message == WM_WINDOWPOSCHANGED
                 || message == WM_DPICHANGED || message == WM_ACTIVATE
-                || message == WM_DWMCOMPOSITIONCHANGED)) {
-            queueRefresh(message == WM_DWMCOMPOSITIONCHANGED);
+                || message == WM_DWMCOMPOSITIONCHANGED || message == WM_EXITSIZEMOVE)) {
+            queueRefresh(message == WM_DWMCOMPOSITIONCHANGED,
+                    message == WM_EXITSIZEMOVE || message == WM_DPICHANGED
+                            || message == WM_ACTIVATE || message == WM_DWMCOMPOSITIONCHANGED);
         }
         return result;
     }
 
-    private void queueRefresh(boolean resetMargins) {
+    private void queueRefresh(boolean resetMargins, boolean forceRepaint) {
         if (resetMargins) marginsRefreshRequested.set(true);
+        if (forceRepaint) finalRepaintRequested.set(true);
         if (!refreshQueued.compareAndSet(false, true)) return;
         SwingUtilities.invokeLater(() -> {
             refreshQueued.set(false);
             if (!active) return;
-            refresh();
-            if (marginsRefreshRequested.getAndSet(false)) applyMargins();
-            // 激活及原生边框重画也可能覆盖玻璃区，即使 Swing 布局尺寸没有变化。
-            afterCaptionPaint();
+            boolean reset = marginsRefreshRequested.getAndSet(false);
+            if (reset) applyMargins();
+            // 松手时总有最后一次提交；普通重复尺寸消息不强制整栏重绘。
+            refresh(finalRepaintRequested.getAndSet(false) || reset);
         });
     }
 
@@ -350,7 +381,7 @@ public final class WindowsRecordingTitleBar {
     private void applyMargins() {
         if (hwnd == null || !active) return;
         Margins margins = new Margins();
-        margins.top = (int) Math.ceil(captionHeight * windowDpi() / 96.0);
+        // 顶部全部由 Swing 绘制；保留 DWM 原生外框，不再扩展玻璃按钮区。
         if (NativeDwm.INSTANCE.DwmExtendFrameIntoClientArea(hwnd, margins) < 0) {
             throw new IllegalStateException("无法扩展 Windows 录制标题栏");
         }
@@ -393,6 +424,11 @@ public final class WindowsRecordingTitleBar {
                     captionColorsApplied = false;
                 }
                 try {
+                    if (stylesChanged) {
+                        int currentStyle = User32.INSTANCE.GetWindowLong(hwnd, GWL_STYLE);
+                        setWindowStyle((currentStyle & ~SYSTEM_BUTTON_STYLES) | originalButtonStyles);
+                        stylesChanged = false;
+                    }
                     frameChanged();
                 } catch (RuntimeException exception) {
                     failure = addCleanupFailure(failure, exception);
@@ -407,9 +443,9 @@ public final class WindowsRecordingTitleBar {
     private void restoreComponent() {
         titleBar.setBorder(originalBorder);
         titleBar.setPreferredSize(originalPreferredSize);
-        reservedWidth = -1;
-        appliedCaptionHeight = -1;
         appliedDpi = 0;
+        finalRepaintRequested.set(false);
+        marginsRefreshRequested.set(false);
         layout = LayoutSnapshot.EMPTY;
         titleBar.revalidate();
     }
@@ -424,45 +460,12 @@ public final class WindowsRecordingTitleBar {
         return Math.max(96, NativeUser.INSTANCE.GetDpiForWindow(hwnd));
     }
 
-    private void clearSystemButtonSurface() {
-        if (!active || hwnd == null || !User32.INSTANCE.IsWindow(hwnd)
-                || !User32.INSTANCE.IsWindowVisible(hwnd) || NativeUser.INSTANCE.IsIconic(hwnd)) return;
-        RECT bounds = new RECT();
-        if (NativeDwm.INSTANCE.DwmGetWindowAttribute(hwnd, DWMWA_CAPTION_BUTTON_BOUNDS,
-                bounds.getPointer(), bounds.size()) < 0) return;
-        bounds.read();
-        if (bounds.right <= bounds.left || bounds.bottom <= bounds.top) return;
-        // 先提交 Java2D 缓冲，避免稍后的 D3D 提交再次盖住刚清理的系统按钮区。
-        Toolkit.getDefaultToolkit().sync();
-        HDC dc = NativeUser.INSTANCE.GetWindowDC(hwnd);
-        if (dc == null) return;
-        try {
-            // BLACKNESS 写入零 alpha，是 DWM 玻璃区协议，颜色仍由系统标题栏主题绘制。
-            NativeGdi.INSTANCE.PatBlt(dc, bounds.left, bounds.top,
-                    bounds.right - bounds.left, bounds.bottom - bounds.top, 0x0042);
-            NativeGdi.INSTANCE.GdiFlush();
-        } finally {
-            User32.INSTANCE.ReleaseDC(hwnd, dc);
+    private void setWindowStyle(int style) {
+        Native.setLastError(0);
+        int previous = User32.INSTANCE.SetWindowLong(hwnd, GWL_STYLE, style);
+        if (previous == 0 && Native.getLastError() != 0) {
+            throw new IllegalStateException("无法更新录制窗口样式：Windows 错误 " + Native.getLastError());
         }
-    }
-
-    private static int titleBarInfoHit(HWND window, int x, int y) {
-        TitleBarInfoEx information = new TitleBarInfoEx();
-        information.write();
-        User32.INSTANCE.SendMessage(window, WM_GETTITLEBARINFOEX, new WPARAM(0),
-                new LPARAM(Pointer.nativeValue(information.getPointer())));
-        information.read();
-        int[] indices = {2, 3, 5};
-        int[] results = {HTMINBUTTON, HTMAXBUTTON, HTCLOSE};
-        for (int i = 0; i < indices.length; i++) {
-            int index = indices[i];
-            // 不把不可用、不可见或屏幕外的系统按钮变成可点击区域。
-            if ((information.states[index] & (0x0001 | 0x8000 | 0x10000)) == 0
-                    && information.rectangles[index].toRectangle().contains(x, y)) {
-                return results[i];
-            }
-        }
-        return 0;
     }
 
     private static RuntimeException addCleanupFailure(RuntimeException current, RuntimeException next) {
@@ -471,7 +474,7 @@ public final class WindowsRecordingTitleBar {
         return current;
     }
 
-    private void applyCaptionColors() {
+    private boolean applyCaptionColors() {
         Color background = titleBar.getBackground();
         int captionColor = colorRef(background == null ? ThemeManager.getPalette().background() : background);
         int textColor = colorRef(ThemeManager.getPalette().textPrimary());
@@ -481,7 +484,9 @@ public final class WindowsRecordingTitleBar {
             captionColorsApplied = true;
             appliedCaptionColor = captionColor;
             appliedTextColor = textColor;
+            return true;
         }
+        return false;
     }
 
     private int readDwmColor(int attribute) {
@@ -516,18 +521,14 @@ public final class WindowsRecordingTitleBar {
                 && y < origin.y + Math.round((logical.y + logical.height) * scale);
     }
 
-    private static boolean isSystemButton(long hit) {
-        return hit == HTMINBUTTON || hit == HTMAXBUTTON || hit == HTCLOSE;
-    }
-
     private static void requireEdt() {
         if (!SwingUtilities.isEventDispatchThread()) {
             throw new IllegalStateException("录制标题栏只能在 Swing 事件线程中修改");
         }
     }
 
-    private record LayoutSnapshot(Rectangle titleBar, List<Rectangle> buttons) {
-        private static final LayoutSnapshot EMPTY = new LayoutSnapshot(new Rectangle(), List.of());
+    private record LayoutSnapshot(Rectangle titleBar, List<Rectangle> buttons, Dimension minimumSize) {
+        private static final LayoutSnapshot EMPTY = new LayoutSnapshot(new Rectangle(), List.of(), new Dimension());
     }
 
     @Structure.FieldOrder({"left", "right", "top", "bottom"})
@@ -538,24 +539,11 @@ public final class WindowsRecordingTitleBar {
         public int bottom;
     }
 
-    @Structure.FieldOrder({"size", "titleBar", "states", "rectangles"})
-    public static final class TitleBarInfoEx extends Structure {
-        public int size;
-        public RECT titleBar = new RECT();
-        public int[] states = new int[6];
-        public RECT[] rectangles = (RECT[]) new RECT().toArray(6);
-
-        public TitleBarInfoEx() {
-            size = size();
-        }
-    }
-
     private interface NativeDwm extends StdCallLibrary {
         NativeDwm INSTANCE = Native.load("dwmapi", NativeDwm.class);
         int DwmGetWindowAttribute(HWND window, int attribute, Pointer value, int size);
         int DwmSetWindowAttribute(HWND window, int attribute, Pointer value, int size);
         int DwmExtendFrameIntoClientArea(HWND window, Margins margins);
-        boolean DwmDefWindowProc(HWND window, int message, WPARAM wParam, LPARAM lParam, Pointer result);
     }
 
     private interface NativeUser extends StdCallLibrary {
@@ -565,12 +553,7 @@ public final class WindowsRecordingTitleBar {
         boolean IsIconic(HWND window);
         boolean IsZoomed(HWND window);
         boolean ClientToScreen(HWND window, POINT point);
-        HDC GetWindowDC(HWND window);
     }
 
-    private interface NativeGdi extends StdCallLibrary {
-        NativeGdi INSTANCE = Native.load("gdi32", NativeGdi.class);
-        boolean PatBlt(HDC dc, int left, int top, int width, int height, int operation);
-        boolean GdiFlush();
-    }
+
 }

@@ -115,6 +115,13 @@ public final class ActionEditorDialog extends JDialog {
     private JLabel subtitleLabel;
     private JCheckBox preserveDelayCheckBox;
     private PropertyPanel currentPropertyPanel;
+    private List<MacroNode> availableBranchTargets = List.of();
+
+    /** 从当前时间线注入节点选项；不向用户暴露需要手输的节点 ID。 */
+    public void setAvailableBranchTargets(List<MacroNode> nodes) {
+        availableBranchTargets = List.copyOf(nodes);
+        if (currentPropertyPanel instanceof ImageCheckPanel image) image.refreshTargets();
+    }
 
     /**
      * 创建新增流程节点编辑器。
@@ -216,8 +223,9 @@ public final class ActionEditorDialog extends JDialog {
         ));
 
         pack();
-        setMinimumSize(new Dimension(720, 380));
-        setSize(720, 380);
+        int initialHeight = initialType == EditorType.IMAGE_CHECK ? 460 : 380;
+        setMinimumSize(new Dimension(720, initialHeight));
+        setSize(720, initialHeight);
         setResizable(false);
         setLocationRelativeTo(owner);
     }
@@ -296,6 +304,9 @@ public final class ActionEditorDialog extends JDialog {
         subtitleLabel.setText(getEditorTypeName(type));
         delayField.setText(type == EditorType.IMAGE_CHECK ? "1000" : "0");
         showPropertyPanel(type, null);
+        int height = type == EditorType.IMAGE_CHECK ? 460 : 380;
+        setMinimumSize(new Dimension(720, height));
+        setSize(720, height);
     }
 
     /** 显示指定节点类型的属性面板，并按需载入原节点数据。 */
@@ -441,7 +452,8 @@ public final class ActionEditorDialog extends JDialog {
 
     /** 创建鼠标按键下拉框。 */
     private JComboBox<MouseButton> createMouseButtonComboBox() {
-        JComboBox<MouseButton> comboBox = new JComboBox<>(MouseButton.values());
+        JComboBox<MouseButton> comboBox = new JComboBox<>(java.util.Arrays.stream(MouseButton.values())
+                .filter(MouseButton::isSupported).toArray(MouseButton[]::new));
         comboBox.setFont(FONT_NORMAL);
         ComponentStyleUtil.styleComboBox(comboBox);
         comboBox.setRenderer((list, value, index, selected, focus) ->
@@ -537,8 +549,7 @@ public final class ActionEditorDialog extends JDialog {
             case LEFT -> "左键";
             case MIDDLE -> "中键";
             case RIGHT -> "右键";
-            case X1 -> "侧键1";
-            case X2 -> "侧键2";
+            case X1, X2 -> "不支持的按键";
         };
     }
 
@@ -685,7 +696,7 @@ public final class ActionEditorDialog extends JDialog {
             GridBagConstraints separatorConstraints = new GridBagConstraints();
             separatorConstraints.gridx = 1;
             separatorConstraints.gridy = 0;
-            separatorConstraints.gridheight = 3;
+            separatorConstraints.gridheight = 4;
             separatorConstraints.weighty = 1;
             separatorConstraints.fill = GridBagConstraints.VERTICAL;
             separatorConstraints.insets = new Insets(0, 14, 0, 14);
@@ -693,7 +704,7 @@ public final class ActionEditorDialog extends JDialog {
 
             GridBagConstraints fillerConstraints = new GridBagConstraints();
             fillerConstraints.gridx = 0;
-            fillerConstraints.gridy = 3;
+            fillerConstraints.gridy = 4;
             fillerConstraints.gridwidth = 3;
             fillerConstraints.weighty = 1;
             fillerConstraints.fill = GridBagConstraints.VERTICAL;
@@ -741,6 +752,59 @@ public final class ActionEditorDialog extends JDialog {
         /** 成功与失败独立配置，均复用现有深色下拉框样式。 */
         private final JComboBox<ImageCheckBehavior> successBehavior = createBehaviorCombo();
         private final JComboBox<ImageCheckBehavior> failureBehavior = createBehaviorCombo();
+        private final JComboBox<BranchTarget> successTarget = createTargetCombo("successTarget");
+        private final JComboBox<BranchTarget> failureTarget = createTargetCombo("failureTarget");
+
+        private JComboBox<BranchTarget> createTargetCombo(String name) {
+            JComboBox<BranchTarget> combo = new JComboBox<>();
+            combo.setName(name);
+            combo.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleComboBox(combo);
+            combo.setPreferredSize(new Dimension(220, 30));
+            return combo;
+        }
+
+        private void refreshTargets() {
+            fillTargets(successTarget, BranchCondition.FOUND);
+            fillTargets(failureTarget, BranchCondition.NOT_FOUND);
+            updateTargetEnabled();
+        }
+
+        private void fillTargets(JComboBox<BranchTarget> combo, BranchCondition condition) {
+            BranchTarget old = (BranchTarget) combo.getSelectedItem();
+            MacroBranch branch = sourceNode == null ? null : MacroFlowFactory.branchFor(sourceNode, condition);
+            String selected = old != null ? old.id() : branch == null ? null : branch.getTargetId();
+            combo.removeAllItems();
+            BranchTarget selection = null;
+            var numbers = TimelineNodeNumbers.labels(availableBranchTargets);
+            for (int i = 0; i < availableBranchTargets.size(); i++) {
+                MacroNode target = availableBranchTargets.get(i);
+                if (target.getType() == NodeType.END || target.getId() == null
+                        || sourceNode != null && target.getId().equals(sourceNode.getId())) continue;
+                BranchTarget option = new BranchTarget(target.getId(), numbers.get(target.getId()) + " · "
+                        + ActionTimelinePanel.getNodeName(target), true);
+                combo.addItem(option);
+                if (target.getId().equals(selected)) selection = option;
+            }
+            if (selected != null && selection == null
+                    && (condition == BranchCondition.FOUND ? successBehavior : failureBehavior).getSelectedItem() == ImageCheckBehavior.JUMP) {
+                selection = new BranchTarget(selected, "原目标已不存在，请重新选择", false);
+                combo.addItem(selection);
+            }
+            if (selection != null) combo.setSelectedItem(selection);
+        }
+
+        private void updateTargetEnabled() {
+            successTarget.setEnabled(successBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
+            failureTarget.setEnabled(failureBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
+        }
+
+        private String selectedTarget(JComboBox<BranchTarget> combo, ImageCheckBehavior behavior) {
+            if (behavior != ImageCheckBehavior.JUMP) return null;
+            BranchTarget target = (BranchTarget) combo.getSelectedItem();
+            if (target == null || !target.available()) throw new IllegalArgumentException("请选择有效的跳转目标节点");
+            return target.id();
+        }
 
         private JComboBox<ImageCheckBehavior> createBehaviorCombo() {
             JComboBox<ImageCheckBehavior> combo = new JComboBox<>(ImageCheckBehavior.values());
@@ -760,6 +824,11 @@ public final class ActionEditorDialog extends JDialog {
             addProperty("匹配阈值", thresholdSpinner);
             addProperty("成功行为", successBehavior);
             addProperty("失败行为", failureBehavior);
+            addProperty("成功目标", successTarget);
+            addProperty("失败目标", failureTarget);
+            successBehavior.addActionListener(event -> updateTargetEnabled());
+            failureBehavior.addActionListener(event -> updateTargetEnabled());
+            refreshTargets();
         }
 
         private void loadConfig(ImageCheckConfig config) {
@@ -767,6 +836,7 @@ public final class ActionEditorDialog extends JDialog {
                     ? ImageCheckBehavior.EXECUTE : config.getSuccessBehavior());
             failureBehavior.setSelectedItem(config == null
                     ? ImageCheckBehavior.RETRY : config.getFailureBehavior());
+            refreshTargets();
             if (config == null || config.getImagePath() == null || config.getImagePath().isBlank()) {
                 templateFile = null;
                 templateButton.setText("选择模板 PNG");
@@ -843,13 +913,13 @@ public final class ActionEditorDialog extends JDialog {
                     new ArrayList<>(List.of(
                             new MacroBranch(
                                     BranchCondition.FOUND,
-                                    null,
+                                    selectedTarget(successTarget, config.getSuccessBehavior()),
                                     0L
                             ),
                             new MacroBranch(
                                     BranchCondition.NOT_FOUND,
-                                    null,
-                                    retryDelay
+                                    selectedTarget(failureTarget, config.getFailureBehavior()),
+                                    config.getFailureBehavior() == ImageCheckBehavior.RETRY ? retryDelay : 0L
                             )
                     ))
             );
@@ -864,6 +934,10 @@ public final class ActionEditorDialog extends JDialog {
         protected MacroAction createAction(long delay) {
             throw new UnsupportedOperationException("图像识别不创建 MacroAction");
         }
+    }
+
+    private record BranchTarget(String id, String label, boolean available) {
+        @Override public String toString() { return label; }
     }
 
     /** 含坐标字段的鼠标动作面板。 */
@@ -923,6 +997,10 @@ public final class ActionEditorDialog extends JDialog {
         @Override
         protected void load(MacroAction action) {
             loadCoordinates(action);
+            if (action != null && action.getMouseButton() != null && !action.getMouseButton().isSupported()) {
+                mouseButtonCombo.setSelectedIndex(-1);
+                return;
+            }
             mouseButtonCombo.setSelectedItem(
                     action == null || action.getMouseButton() == null
                             ? MouseButton.LEFT
@@ -934,6 +1012,9 @@ public final class ActionEditorDialog extends JDialog {
             MouseButton button = (MouseButton) mouseButtonCombo.getSelectedItem();
             if (button == null) {
                 throw new IllegalArgumentException("请选择鼠标按键");
+            }
+            if (!button.isSupported()) {
+                throw new IllegalArgumentException("不支持鼠标侧键");
             }
             return button;
         }

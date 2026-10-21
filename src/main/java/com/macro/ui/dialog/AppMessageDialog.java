@@ -396,12 +396,17 @@ public final class AppMessageDialog extends JDialog {
 
             @Override
             public void mousePressed(MouseEvent event) {
-                pressedPoint = event.getPoint();
+                if (SwingUtilities.isLeftMouseButton(event)) pressedPoint = event.getPoint();
+            }
+
+            @Override
+            public void mouseReleased(MouseEvent event) {
+                if (SwingUtilities.isLeftMouseButton(event)) pressedPoint = null;
             }
 
             @Override
             public void mouseDragged(MouseEvent event) {
-                if (pressedPoint == null) return;
+                if (pressedPoint == null || (event.getModifiersEx() & MouseEvent.BUTTON1_DOWN_MASK) == 0) return;
                 Point screenPoint = event.getLocationOnScreen();
                 setLocation(
                         screenPoint.x - pressedPoint.x,

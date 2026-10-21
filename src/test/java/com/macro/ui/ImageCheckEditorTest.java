@@ -73,8 +73,8 @@ public class ImageCheckEditorTest {
                     Graphics2D g = overview.createGraphics();
                     g.setColor(ThemeManager.getPalette().card()); g.fillRect(0, 0, 2460, 930);
                     int combination = 0;
-                    for (ImageCheckBehavior success : ImageCheckBehavior.values()) {
-                        for (ImageCheckBehavior failure : ImageCheckBehavior.values()) {
+                    for (ImageCheckBehavior success : List.of(ImageCheckBehavior.RETRY, ImageCheckBehavior.EXECUTE, ImageCheckBehavior.TERMINATE)) {
+                        for (ImageCheckBehavior failure : List.of(ImageCheckBehavior.RETRY, ImageCheckBehavior.EXECUTE, ImageCheckBehavior.TERMINATE)) {
                             ActionTimelinePanel timeline = new ActionTimelinePanel();
                             timeline.setActions(List.of(MacroAction.mouseMove(10, 20, 100),
                                     MacroAction.mouseMove(30, 40, 200)));

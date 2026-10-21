@@ -20,8 +20,6 @@ import java.lang.reflect.Method;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
-import java.util.HashSet;
-import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -34,8 +32,6 @@ public final class RecordingControlBarUiTest {
     private static long originalWindowProcedure;
     private static final int WM_NCHITTEST = 0x0084;
     private static final int WM_SYSCOMMAND = 0x0112;
-    private static final int SC_MINIMIZE = 0xF020;
-    private static final int SC_MAXIMIZE = 0xF030;
     private static final int SC_RESTORE = 0xF120;
     private static final int SC_CLOSE = 0xF060;
 
@@ -78,7 +74,7 @@ public final class RecordingControlBarUiTest {
                 seed.invoke(recorder, com.macro.model.MacroAction.keyRelease(java.awt.event.KeyEvent.VK_A, "A", 0));
                 invoke(frame, "applyRecordingStartBehavior");
             });
-            await(() -> nativeCaption().isActive() && !nativeCaption().getSystemButtonBounds().isEmpty()
+            await(() -> nativeCaption().isActive()
                     && frame.getHeight() < 150, "原生录制标题栏布局未就绪");
             edt(() -> {
                 invoke(frame, "refreshRecordingControlBar");
@@ -101,7 +97,7 @@ public final class RecordingControlBarUiTest {
             captureCaptionForInspection("recording-native-caption.png");
             verifyCaptionRepaintStability();
             edt(RecordingControlBarUiTest::verifyNativeCaptionContract);
-            edt(() -> systemCommand(SC_MAXIMIZE));
+            edt(() -> frame.setExtendedState(Frame.MAXIMIZED_BOTH));
             await(() -> (frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == Frame.MAXIMIZED_BOTH,
                     "原生最大化系统命令没有生效");
             edt(() -> {
@@ -148,7 +144,7 @@ public final class RecordingControlBarUiTest {
                 check(!recorder.getRecordingStatus().paused(), "继续失败");
                 check(field(button("recordingBarPauseButton").getIcon(), "type").toString().equals("PAUSE"),
                         "恢复录制后没有恢复暂停图标");
-                systemCommand(SC_MINIMIZE);
+                button("recordingBarMinimizeButton").doClick();
             });
             await(() -> (frame.getExtendedState() & Frame.ICONIFIED) != 0, "最小化不是任务栏最小化");
             edt(() -> { systemCommand(SC_RESTORE); frame.setVisible(true); });
@@ -228,7 +224,7 @@ public final class RecordingControlBarUiTest {
                             && (frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == Frame.MAXIMIZED_BOTH,
                     "录制停止未保留最小化之前的最大化状态"));
             verifyNativeCloseCommand();
-            System.out.println("通过：三种录制启动行为、混合标题栏布局和命中、原生系统按钮及窗口样式、最大化/还原/最小化/关闭系统命令、暂停截图成功/取消、全部窗口显隐、停止/F12 和消息链恢复及动作保留；未模拟真实鼠标交互");
+            System.out.println("通过：三种录制启动行为、混合标题栏布局和命中、自绘最小化及窗口样式、程序化最大化/还原、自绘最小化、关闭消息、暂停截图成功/取消、全部窗口显隐、停止/F12 和消息链恢复及动作保留；未模拟真实鼠标交互");
         } finally {
             // 先让既有停止回调执行，再销毁窗口，避免测试清理后回调重新恢复主窗口。
             edt(() -> { if (recorder != null) recorder.stop(); });
@@ -259,47 +255,21 @@ public final class RecordingControlBarUiTest {
         check(caption.isActive(), "混合标题栏没有启用");
         int styles = User32.INSTANCE.GetWindowLong(window(), -16);
         check((styles & 0x00C00000) == 0x00C00000 && (styles & 0x00040000) != 0
-                        && (styles & 0x00010000) != 0 && (styles & 0x00020000) != 0
-                        && (styles & 0x00080000) != 0,
-                "Windows 原生标题栏、缩放边框或系统按钮样式丢失");
+                        && (styles & 0x000B0000) == 0,
+                "DWM 边框丢失或原生系统按钮样式残留");
         WinDef.RECT outer = new WinDef.RECT();
         check(User32.INSTANCE.GetWindowRect(window(), outer), "无法获取测试窗口物理位置");
         WinDef.POINT client = new WinDef.POINT();
         check(NativeUser.INSTANCE.ClientToScreen(window(), client), "无法取得客户区原点");
         double scale = NativeUser.INSTANCE.GetDpiForWindow(window()) / 96.0;
-        Rectangle system = caption.getSystemButtonBounds();
-        Rectangle systemScreen = new Rectangle(outer.left + system.x, outer.top + system.y,
-                system.width, system.height);
-        int lastButtonRight = Integer.MIN_VALUE;
-        for (String name : new String[]{"recordingBarCaptureButton", "recordingBarPauseButton", "recordingBarStopButton"}) {
+        for (String name : new String[]{"recordingBarMinimizeButton", "recordingBarCaptureButton",
+                "recordingBarPauseButton", "recordingBarStopButton"}) {
             JButton control = button(name);
             Rectangle logical = SwingUtilities.convertRectangle(control.getParent(), control.getBounds(), frame.getRootPane());
-            Rectangle physical = new Rectangle(client.x + (int) Math.round(logical.x * scale),
-                    client.y + (int) Math.round(logical.y * scale), (int) Math.round(logical.width * scale),
-                    (int) Math.round(logical.height * scale));
-            check(!physical.intersects(systemScreen), "业务按钮遮挡系统按钮：" + name);
-            check(physical.getCenterY() <= systemScreen.getMaxY(), "业务按钮仍位于原生标题栏下方：" + name);
-            check(hitTest((int) physical.getCenterX(), (int) physical.getCenterY()) == 1,
-                    "业务按钮没有按客户区处理点击：" + name);
-            lastButtonRight = Math.max(lastButtonRight, physical.x + physical.width);
+            check(hitTest(client.x + (int) Math.round(logical.getCenterX() * scale),
+                    client.y + (int) Math.round(logical.getCenterY() * scale)) == 1,
+                    "自绘按钮没有按客户区处理点击：" + name);
         }
-        check(lastButtonRight <= systemScreen.x, "三个业务按钮没有排列在系统最小化按钮左侧");
-        Set<Integer> systemHits = new HashSet<>();
-        int middle = (int) systemScreen.getCenterY();
-        for (int x = systemScreen.x + 2; x < systemScreen.x + systemScreen.width - 2; x += 2) {
-            systemHits.add(hitTest(x, middle));
-        }
-        if (!systemHits.contains(8) || !systemHits.contains(9) || !systemHits.contains(20)) {
-            JComponent row = (JComponent) field(frame, "recordingCaptionRow");
-            Rectangle rowBounds = SwingUtilities.convertRectangle(row.getParent(), row.getBounds(), frame.getRootPane());
-            System.out.println("标题栏命中诊断：DPI=" + NativeUser.INSTANCE.GetDpiForWindow(window())
-                    + "，原生窗口=" + outer.toRectangle() + "，客户区原点=(" + client.x + "," + client.y + ")"
-                    + "，Swing边距=" + frame.getInsets() + "，根面板=" + frame.getRootPane().getBounds()
-                    + "，标题行=" + rowBounds + "，系统按钮窗口相对区域=" + system
-                    + "，系统按钮屏幕区域=" + systemScreen + "，命中=" + systemHits);
-        }
-        check(systemHits.contains(8) && systemHits.contains(9) && systemHits.contains(20),
-                "系统最小化、最大化或关闭按钮的命中区域丢失：" + systemHits);
         JComponent row = (JComponent) field(frame, "recordingCaptionRow");
         Rectangle rowBounds = SwingUtilities.convertRectangle(row.getParent(), row.getBounds(), frame.getRootPane());
         int dragX = client.x + (int) Math.round((rowBounds.x + 16) * scale);
@@ -308,8 +278,8 @@ public final class RecordingControlBarUiTest {
         if ((frame.getExtendedState() & Frame.MAXIMIZED_BOTH) == 0) {
             check(hitTest(outer.left + 1, (outer.top + outer.bottom) / 2) == 10,
                     "左侧原生缩放边框命中丢失");
-            check(hitTest((outer.left + outer.right) / 2, outer.top + 1) == 12,
-                    "顶部原生缩放边框命中丢失");
+            check(hitTest((outer.left + outer.right) / 2, outer.top + 1) == 2,
+                    "顶部应保留拖动，不能启动纵向缩放");
         }
     }
     private static int hitTest(int screenX, int screenY) {
@@ -362,7 +332,7 @@ public final class RecordingControlBarUiTest {
             });
         }
     }
-    /** 重复绘制父行、更新子组件及改变宽度，验证缓冲提交不会再次遮住原生图标。 */
+    /** 重复绘制父行、更新子组件及改变宽度，验证自绘最小化符号保持可见。 */
     private static void verifyCaptionRepaintStability() throws Exception {
         AtomicReference<Dimension> originalSize = new AtomicReference<>();
         edt(() -> originalSize.set(frame.getSize()));
@@ -386,7 +356,7 @@ public final class RecordingControlBarUiTest {
         });
         captureCaptionForInspection("recording-native-caption-repainted.png");
     }
-    /** 保存真实窗口画面，并检查系统按钮命中区确实存在对比符号，避免把透明空白当成成功。 */
+    /** 保存真实窗口画面，并检查自绘最小化按钮命中区确实存在对比符号，避免把透明空白当成成功。 */
     private static void captureCaptionForInspection(String imageName) throws Exception {
         AtomicReference<Boolean> wasTop = new AtomicReference<>();
         edt(() -> {
@@ -406,14 +376,14 @@ public final class RecordingControlBarUiTest {
                 check(User32.INSTANCE.GetWindowRect(window(), outer), "无法取得截图窗口的物理位置");
                 int dpi = NativeUser.INSTANCE.GetDpiForWindow(window());
                 double scale = dpi / 96.0;
-                Rectangle system = nativeCaption().getSystemButtonBounds();
-                Rectangle systemScreen = new Rectangle(outer.left + system.x, outer.top + system.y,
-                        system.width, system.height);
-                Rectangle[] buttonRanges = new Rectangle[3];
-                int[] hitCodes = {8, 9, 20};
-                for (int index = 0; index < hitCodes.length; index++) {
-                    buttonRanges[index] = findSystemButtonRange(systemScreen, hitCodes[index]);
-                }
+                JButton minimize = button("recordingBarMinimizeButton");
+                Rectangle logical = SwingUtilities.convertRectangle(minimize.getParent(), minimize.getBounds(), frame.getRootPane());
+                WinDef.POINT client = new WinDef.POINT();
+                check(NativeUser.INSTANCE.ClientToScreen(window(), client), "无法取得客户区原点");
+                Rectangle[] buttonRanges = {new Rectangle(
+                        client.x + (int) Math.round(logical.x * scale),
+                        client.y + (int) Math.round(logical.y * scale),
+                        (int) Math.round(logical.width * scale), (int) Math.round(logical.height * scale))};
                 // 最大化窗口可能超出屏幕边界，只截取显示器内的部分，并保留相应的物理坐标原点。
                 Rectangle physicalCapture = new Rectangle(
                         outer.left + (int) Math.round((captureBounds.x - windowBounds.x) * scale),
@@ -427,31 +397,11 @@ public final class RecordingControlBarUiTest {
             Path output = Path.of("target", imageName);
             Files.createDirectories(output.toAbsolutePath().getParent());
             check(ImageIO.write(image, "png", output.toFile()), "标题栏诊断截图未保存");
-            // 先落盘再断言；如果出现空白系统按钮，失败画面仍可供定位。
+            // 先落盘再断言；如果出现空白自绘最小化按钮，失败画面仍可供定位。
             verifySystemButtonGlyphs(image, captured, output);
         } finally {
             edt(() -> frame.setAlwaysOnTop(wasTop.get()));
         }
-    }
-    /** 按真实命中结果寻找连续区域，不假设三个系统按钮等宽。 */
-    private static Rectangle findSystemButtonRange(Rectangle systemScreen, int wantedHit) {
-        int runStart = -1;
-        int bestStart = -1;
-        int bestWidth = 0;
-        int right = systemScreen.x + systemScreen.width;
-        int middle = (int) systemScreen.getCenterY();
-        for (int x = systemScreen.x; x <= right; x++) {
-            boolean matches = x < right && hitTest(x, middle) == wantedHit;
-            if (matches && runStart < 0) runStart = x;
-            if (!matches && runStart >= 0) {
-                if (x - runStart > bestWidth) {
-                    bestStart = runStart;
-                    bestWidth = x - runStart;
-                }
-                runStart = -1;
-            }
-        }
-        return new Rectangle(bestStart, systemScreen.y, bestWidth, systemScreen.height);
     }
     /** 排除命中区外沿，再按亮度及相对背景的对比度统计系统符号像素。 */
     private static void verifySystemButtonGlyphs(BufferedImage image, CaptionObservation captured, Path output) {
@@ -459,19 +409,19 @@ public final class RecordingControlBarUiTest {
         double imageScaleX = image.getWidth() / (double) physicalCapture.width;
         double imageScaleY = image.getHeight() / (double) physicalCapture.height;
         int margin = Math.max(4, (int) Math.ceil(4 * captured.dpi() / 96.0));
-        int[] hitCodes = {8, 9, 20};
+        int[] hitCodes = {1};
         int[] brightCounts = new int[hitCodes.length];
         for (int index = 0; index < hitCodes.length; index++) {
             Rectangle range = captured.buttonRanges()[index];
             check(range.width > margin * 2 && range.height > margin * 2,
-                    "系统按钮命中区不足以核验符号：" + hitCodes[index] + "，区域=" + range + "，截图=" + output);
+                    "自绘最小化按钮命中区不足以核验符号：" + hitCodes[index] + "，区域=" + range + "，截图=" + output);
             int left = (int) Math.ceil((range.x + margin - physicalCapture.x) * imageScaleX);
             int right = (int) Math.floor((range.x + range.width - margin - physicalCapture.x) * imageScaleX);
             int top = (int) Math.ceil((range.y + margin - physicalCapture.y) * imageScaleY);
             int bottom = (int) Math.floor((range.y + range.height - margin - physicalCapture.y) * imageScaleY);
             Rectangle imageRegion = new Rectangle(left, top, Math.max(0, right - left), Math.max(0, bottom - top))
                     .intersection(new Rectangle(0, 0, image.getWidth(), image.getHeight()));
-            check(!imageRegion.isEmpty(), "系统按钮符号区域未落在截图内：" + range + "，截图=" + output);
+            check(!imageRegion.isEmpty(), "自绘最小化按钮符号区域未落在截图内：" + range + "，截图=" + output);
             int[] luminanceHistogram = new int[256];
             for (int y = imageRegion.y; y < imageRegion.y + imageRegion.height; y++) {
                 for (int x = imageRegion.x; x < imageRegion.x + imageRegion.width; x++) {
@@ -491,12 +441,12 @@ public final class RecordingControlBarUiTest {
                 }
             }
             check(brightCounts[index] >= 3,
-                    "系统按钮命中存在但符号不可见：HT=" + hitCodes[index] + "，对比符号像素=" + brightCounts[index]
+                    "自绘最小化按钮命中存在但符号不可见：HT=" + hitCodes[index] + "，对比符号像素=" + brightCounts[index]
                             + "，DPI=" + captured.dpi() + "，物理按钮区域=" + range + "，图像检查区=" + imageRegion
                             + "，背景亮度=" + background + "，截图=" + output.toAbsolutePath());
         }
-        System.out.println("系统按钮可见性：" + output.getFileName() + "，DPI=" + captured.dpi()
-                + "，最小化/最大化或还原/关闭对比像素=" + java.util.Arrays.toString(brightCounts));
+        System.out.println("自绘最小化按钮可见性：" + output.getFileName() + "，DPI=" + captured.dpi()
+                + "，最小化对比像素=" + java.util.Arrays.toString(brightCounts));
     }
     private static int luminance(int rgb) {
         return (299 * ((rgb >>> 16) & 0xFF) + 587 * ((rgb >>> 8) & 0xFF) + 114 * (rgb & 0xFF)) / 1000;

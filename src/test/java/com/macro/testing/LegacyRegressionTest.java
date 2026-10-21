@@ -28,6 +28,25 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 /** 为已审查的独立回归检查提供标准入口，不启动其他桌面测试。 */
 class LegacyRegressionTest {
     @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "原生改宽检查需要 Windows HWND")
+    void recordingBarNativeResize() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "需要屏幕外已显示窗口；不截图、不发送真实输入");
+        LegacyMainRunner.run(com.macro.ui.RecordingBarNativeResizeTest.class, false);
+    }
+
+    @Test
+    void recordingBarPlacement() throws Exception {
+        LegacyMainRunner.run(com.macro.config.RecordingBarPlacementTest.class, true);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "自绘标题栏契约需要 Windows HWND")
+    void recordingTitleBarContract() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "构造隐藏主窗口需要桌面；不发送真实输入");
+        LegacyMainRunner.run(com.macro.ui.RecordingTitleBarContractTest.class, false);
+    }
+
+    @Test
     void templatePathResolution() throws Exception {
         LegacyMainRunner.run(TemplatePathIntegrationTest.class, true);
     }

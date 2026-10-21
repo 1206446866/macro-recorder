@@ -39,6 +39,7 @@ import com.macro.ui.util.ComponentStyleUtil;
 import com.macro.ui.util.NumericInputUtil;
 import com.macro.ui.util.WindowManager;
 import com.macro.ui.window.WindowsRecordingTitleBar;
+import com.macro.ui.window.RecordingBarGeometry;
 import com.macro.util.WindowsWindowUtil;
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
@@ -202,13 +203,15 @@ public class MacroFrame extends JFrame {
     /** 后台保存录制模板的任务，用于在停止录制时取消未完成工作。 */
     private SwingWorker<File, Void> recordingImageSaveWorker;
 
-    /** 同一个 JFrame 的录制内容区，保留原生标题栏及任务栏窗口身份。 */
+    /** 同一个 JFrame 的录制内容区，保留任务栏窗口身份和 DWM 边框。 */
     private JPanel recordingControlBar;
-    /** 仅在紧凑录制模式显示，由 DWM 保留右侧原生窗口按钮。 */
+    /** 仅在紧凑录制模式显示的自绘双行标题内容。 */
     private JPanel recordingCaptionRow;
     private WindowsRecordingTitleBar nativeRecordingTitleBar;
     private final JLabel recordingBarStatus = new JLabel("正在录制");
-    private final JLabel recordingBarCount = new JLabel("0 项");
+    private final JLabel recordingBarCount = new JLabel("操作数：0");
+    private final JLabel recordingBarTarget = new JLabel();
+    private final JButton recordingBarMinimizeButton = new JButton("−");
     private final JButton recordingBarCaptureButton = new JButton("截图");
     private final JButton recordingBarPauseButton = new JButton("暂停");
     private final JButton recordingBarStopButton = new JButton("终止");
@@ -217,6 +220,10 @@ public class MacroFrame extends JFrame {
     private Dimension fullWindowMinimum;
     private int fullWindowState;
     private boolean fullWindowResizable;
+    /** 紧凑模式临时置顶，退出时恢复主窗口原有值。 */
+    private boolean fullWindowAlwaysOnTop;
+    private Rectangle lastRecordingBarBounds;
+    private boolean recordingBarPlacementReady;
     /** 仅恢复本次录制启动主动最小化的窗口，不干预“无”模式的显示状态。 */
     private boolean windowMinimizedForRecording;
     private volatile boolean compactRecording;
@@ -371,47 +378,28 @@ public class MacroFrame extends JFrame {
         });
     }
 
-    /** 标题内容交给 DWM 扩展区承载，系统最小化、最大化和关闭按钮不使用 Swing 替代。 */
+    /** 自绘双行标题内容，原生层只负责边框与拖动命中。 */
     private JPanel createRecordingControlBar() {
-        JPanel bar = new JPanel(new BorderLayout());
-        bar.setBackground(BACKGROUND_COLOR);
-        recordingCaptionRow = new JPanel(new BorderLayout(14, 0)) {
-            @Override
-            public void paint(Graphics graphics) {
-                super.paint(graphics);
-                // Swing 完成绘制后再清理系统按钮区域的像素透明度，图标仍由 DWM 绘制。
-                if (nativeRecordingTitleBar != null) nativeRecordingTitleBar.afterCaptionPaint();
-            }
-        };
-        recordingCaptionRow.setBackground(BACKGROUND_COLOR);
-        recordingCaptionRow.setForeground(TEXT_PRIMARY);
-        recordingCaptionRow.setBorder(new EmptyBorder(2, 10, 2, 10));
-        JPanel status = new JPanel();
-        status.setLayout(new BoxLayout(status, BoxLayout.X_AXIS));
-        status.setOpaque(false);
         JLabel applicationName = new JLabel(ApplicationInfo.APP_NAME);
-        applicationName.setFont(FONT_SMALL);
+        applicationName.setFont(FONT_BOLD);
         applicationName.setForeground(TEXT_PRIMARY);
         recordingBarStatus.setFont(FONT_BOLD);
         recordingBarCount.setFont(FONT_SMALL);
         recordingBarCount.setForeground(TEXT_SECONDARY);
-        recordingBarCount.setPreferredSize(new Dimension(88, recordingBarCount.getPreferredSize().height));
-        status.add(applicationName);
-        status.add(Box.createHorizontalStrut(12));
-        status.add(recordingBarStatus);
-        status.add(Box.createHorizontalStrut(7));
-        status.add(recordingBarCount);
-        JPanel buttons = new JPanel(new GridLayout(1, 3, 6, 0));
-        buttons.setOpaque(false);
-        for (JButton button : List.of(recordingBarCaptureButton, recordingBarPauseButton,
+        recordingBarCount.setPreferredSize(new Dimension(140, recordingBarCount.getPreferredSize().height));
+        recordingBarTarget.setFont(FONT_BOLD);
+        recordingBarTarget.setForeground(TEXT_PRIMARY);
+        for (JButton button : List.of(recordingBarMinimizeButton, recordingBarCaptureButton, recordingBarPauseButton,
                 recordingBarStopButton)) {
-            styleSecondaryButton(button);
+            ComponentStyleUtil.styleSecondaryButton(button);
             button.setFont(FONT_SMALL);
-            button.setBorder(new EmptyBorder(3, 10, 3, 10));
+            button.setBorder(new EmptyBorder(5, 10, 5, 10));
             // 避免按钮自动抢键盘焦点；仍保留正常的 Tab、空格激活能力。
             button.setRequestFocusEnabled(false);
-            buttons.add(button);
         }
+        recordingBarMinimizeButton.setPreferredSize(new Dimension(34, 28));
+        recordingBarMinimizeButton.setToolTipText("最小化");
+        recordingBarMinimizeButton.getAccessibleContext().setAccessibleName("最小化");
         recordingBarStopButton.setForeground(DANGER_COLOR);
         setButtonIcon(recordingBarCaptureButton, ButtonIconType.IMAGE_CAPTURE);
         setButtonIcon(recordingBarPauseButton, ButtonIconType.PAUSE);
@@ -421,10 +409,10 @@ public class MacroFrame extends JFrame {
         }
         recordingBarCaptureButton.setToolTipText("截图并加入图像识别节点（F10）");
         recordingBarStopButton.setToolTipText("停止录制并保留已录制内容（F12）");
-        recordingCaptionRow.add(status, BorderLayout.CENTER);
-        recordingCaptionRow.add(buttons, BorderLayout.EAST);
-        bar.add(recordingCaptionRow, BorderLayout.NORTH);
-        return bar;
+        recordingCaptionRow = new RecordingControlBar(applicationName, recordingBarStatus, recordingBarCount,
+                recordingBarTarget, recordingBarMinimizeButton, recordingBarCaptureButton,
+                recordingBarPauseButton, recordingBarStopButton);
+        return recordingCaptionRow;
     }
 
     /** NativeHook 线程只查询 Win32，将 EDT 的按钮快照按窗口当前 DPI 转为物理坐标。 */
@@ -493,34 +481,40 @@ public class MacroFrame extends JFrame {
         fullWindowMinimum = getMinimumSize();
         fullWindowState = getExtendedState();
         fullWindowResizable = isResizable();
+        fullWindowAlwaysOnTop = isAlwaysOnTop();
+        recordingBarPlacementReady = false;
+        lastRecordingBarBounds = null;
         compactRecording = true;
         recordingControlRegionEnabled = true;
         setExtendedState(Frame.NORMAL);
         setMinimumSize(new Dimension(0, 0));
-        // 系统最大化按钮和边缘缩放依赖可缩放样式，紧凑模式仍交给 Windows 处理。
+        // 保留原生边缘缩放；系统标题栏按钮由扩展层隐藏。
         setResizable(true);
         setContentPane(recordingControlBar);
         refreshRecordingControlBar();
         if (nativeRecordingTitleBar == null) {
             nativeRecordingTitleBar = new WindowsRecordingTitleBar(this, recordingCaptionRow,
-                    List.of(recordingBarCaptureButton, recordingBarPauseButton, recordingBarStopButton));
+                    List.of(recordingBarMinimizeButton, recordingBarCaptureButton, recordingBarPauseButton, recordingBarStopButton));
         }
         try {
             nativeRecordingTitleBar.activate();
+            setAlwaysOnTop(true);
         } catch (RuntimeException exception) {
             exitCompactRecordingMode();
             showRecordingCaptureError("录制标题栏暂不可用，录制仍在继续，可按 F12 停止。", exception);
             return;
         }
-        setMinimumSize(new Dimension(recordingControlBar.getPreferredSize().width, 0));
         pack();
-        Rectangle usable = getGraphicsConfiguration().getBounds();
-        Insets screenInsets = Toolkit.getDefaultToolkit().getScreenInsets(getGraphicsConfiguration());
-        int x = Math.max(usable.x + screenInsets.left,
-                Math.min(fullWindowBounds.x, usable.x + usable.width - screenInsets.right - getWidth()));
-        int y = Math.max(usable.y + screenInsets.top,
-                Math.min(fullWindowBounds.y, usable.y + usable.height - screenInsets.bottom - getHeight()));
-        setLocation(x, y);
+        Dimension compactSize = getSize();
+        setMinimumSize(compactSize);
+        nativeRecordingTitleBar.refresh();
+        AppConfig.RecordingBarPlacement saved = appConfig.getRecordingBarPlacement();
+        Rectangle requested = saved == null
+                ? new Rectangle(fullWindowBounds.x, fullWindowBounds.y, compactSize.width, compactSize.height)
+                : new Rectangle(saved.x(), saved.y(), saved.width(), compactSize.height);
+        setBounds(RecordingBarGeometry.restore(requested, compactSize, recordingBarWorkAreas()));
+        recordingBarPlacementReady = true;
+        rememberRecordingBarBounds();
         nativeRecordingTitleBar.refresh();
         recorder.refreshControlRegion();
         recordingBarTimer.start();
@@ -530,9 +524,19 @@ public class MacroFrame extends JFrame {
     private void exitCompactRecordingMode() {
         if (!compactRecording) return;
         recordingBarTimer.stop();
+        rememberRecordingBarBounds();
+        if (recordingBarPlacementReady && lastRecordingBarBounds != null) {
+            appConfig.updateRecordingBarPlacement(new AppConfig.RecordingBarPlacement(
+                    lastRecordingBarBounds.x, lastRecordingBarBounds.y, lastRecordingBarBounds.width));
+        }
+        recordingBarPlacementReady = false;
         recordingControlRegionEnabled = false;
         compactRecording = false;
-        if (nativeRecordingTitleBar != null) nativeRecordingTitleBar.deactivate();
+        try {
+            if (nativeRecordingTitleBar != null) nativeRecordingTitleBar.deactivate();
+        } finally {
+            setAlwaysOnTop(fullWindowAlwaysOnTop);
+        }
         setExtendedState(Frame.NORMAL);
         setMinimumSize(new Dimension(0, 0));
         setResizable(fullWindowResizable);
@@ -545,6 +549,29 @@ public class MacroFrame extends JFrame {
         recorder.refreshControlRegion();
         revalidate();
         repaint();
+    }
+
+    /** 仅缓存正常窗口位置；最小化坐标和截图临时显隐不进入配置。 */
+    private void rememberRecordingBarBounds() {
+        if (compactRecording && recordingBarPlacementReady
+                && (getExtendedState() & (Frame.ICONIFIED | Frame.MAXIMIZED_BOTH)) == 0) {
+            lastRecordingBarBounds = new Rectangle(getBounds());
+        }
+    }
+
+    private List<Rectangle> recordingBarWorkAreas() {
+        List<Rectangle> areas = new ArrayList<>();
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            GraphicsConfiguration configuration = device.getDefaultConfiguration();
+            Rectangle bounds = new Rectangle(configuration.getBounds());
+            Insets insets = Toolkit.getDefaultToolkit().getScreenInsets(configuration);
+            bounds.x += insets.left;
+            bounds.y += insets.top;
+            bounds.width -= insets.left + insets.right;
+            bounds.height -= insets.top + insets.bottom;
+            if (bounds.width > 0 && bounds.height > 0) areas.add(bounds);
+        }
+        return areas;
     }
 
     /** 所有录制结束路径共用收尾；紧凑模式保留既有完整窗口恢复流程。 */
@@ -567,10 +594,14 @@ public class MacroFrame extends JFrame {
     /** 动作数量由录制器轻量快照取得，截图结束后仍以实际暂停状态显示按钮。 */
     private void refreshRecordingControlBar() {
         if (!compactRecording) return;
+        rememberRecordingBarBounds();
         MacroRecorder.RecordingStatus status = recorder.getRecordingStatus();
         recordingBarStatus.setText(status.capturing() ? "正在截图" : status.paused() ? "已暂停" : "正在录制");
         recordingBarStatus.setForeground(status.paused() ? ACCENT_COLOR : DANGER_COLOR);
-        recordingBarCount.setText(status.nodeCount() + " 项");
+        recordingBarCount.setText("操作数：" + status.nodeCount());
+        String targetText = RecordingControlBar.targetText(targetWindow);
+        recordingBarTarget.setText(targetText);
+        recordingBarTarget.setToolTipText(targetText);
         recordingBarPauseButton.setText(status.paused() ? "继续" : "暂停");
         ButtonIconType pauseIcon = status.paused() ? ButtonIconType.PLAY : ButtonIconType.PAUSE;
         if (!(recordingBarPauseButton.getIcon() instanceof LineIcon icon) || icon.type != pauseIcon) {
@@ -1052,6 +1083,10 @@ public class MacroFrame extends JFrame {
     }
 
     private void initEvents() {
+        addComponentListener(new java.awt.event.ComponentAdapter() {
+            @Override public void componentMoved(java.awt.event.ComponentEvent event) { rememberRecordingBarBounds(); }
+            @Override public void componentResized(java.awt.event.ComponentEvent event) { rememberRecordingBarBounds(); }
+        });
         settingsButton.addActionListener(e -> openSettings());
 
         imageCaptureButton.addActionListener(e -> showImageCapturePage());
@@ -1063,6 +1098,10 @@ public class MacroFrame extends JFrame {
         stopRecordButton.addActionListener(e -> stopRecording());
 
         recordingImageButton.addActionListener(e -> requestRecordingImageCapture());
+        recordingBarMinimizeButton.addActionListener(e -> {
+            rememberRecordingBarBounds();
+            WindowManager.minimize(this);
+        });
         recordingBarCaptureButton.addActionListener(e -> requestRecordingImageCapture());
         recordingBarPauseButton.addActionListener(e -> toggleRecordingPause());
         recordingBarStopButton.addActionListener(e -> stopRecording());
@@ -2301,6 +2340,7 @@ public class MacroFrame extends JFrame {
                     }
                 })
         );
+        dialog.setAvailableBranchTargets(MacroFlowFactory.timelineNodes(actionTimelinePanel.getFlow()));
         showTimelineEditor(dialog);
     }
 
@@ -2317,6 +2357,7 @@ public class MacroFrame extends JFrame {
                     }
                 })
         );
+        dialog.setAvailableBranchTargets(MacroFlowFactory.timelineNodes(actionTimelinePanel.getFlow()));
         showTimelineEditor(dialog);
     }
 

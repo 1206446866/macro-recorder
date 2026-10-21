@@ -28,6 +28,9 @@ public class AppConfig {
     private static final String KEY_MOUSE_MOVE_INTERVAL = "record.mouseMoveInterval";
     private static final String KEY_MINIMIZE_ON_RECORDING = "record.minimizeWindow";
     private static final String KEY_RECORDING_START_BEHAVIOR = "record.startBehavior";
+    private static final String KEY_RECORDING_BAR_X = "record.controlBar.x";
+    private static final String KEY_RECORDING_BAR_Y = "record.controlBar.y";
+    private static final String KEY_RECORDING_BAR_WIDTH = "record.controlBar.width";
     private static final String KEY_TIMELINE_INSERT_POSITION = "timeline.defaultInsertPosition";
     private static final String KEY_MINIMIZE_ON_PLAY_START = "minimizeOnPlayStart";
     private static final String KEY_RESTORE_WINDOW_AFTER_PLAY_STOP =
@@ -240,6 +243,40 @@ public class AppConfig {
     void replaceConfigFile(Path temporaryPath, Path targetPath) throws IOException {
         Files.move(temporaryPath, targetPath,
                 StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /** 紧凑录制栏独立的逻辑坐标；高度始终由当前布局计算。 */
+    public record RecordingBarPlacement(int x, int y, int width) {
+        public RecordingBarPlacement {
+            if (width <= 0) throw new IllegalArgumentException("操作栏宽度必须大于零");
+        }
+    }
+
+    /** 缺失、不完整或非法配置按首次使用处理，不改写原文件。 */
+    public synchronized RecordingBarPlacement getRecordingBarPlacement() {
+        try {
+            return new RecordingBarPlacement(
+                    Integer.parseInt(properties.getProperty(KEY_RECORDING_BAR_X)),
+                    Integer.parseInt(properties.getProperty(KEY_RECORDING_BAR_Y)),
+                    Integer.parseInt(properties.getProperty(KEY_RECORDING_BAR_WIDTH)));
+        } catch (IllegalArgumentException exception) {
+            return null;
+        }
+    }
+
+    /** 正常退出紧凑模式时一次原子保存三项；失败时保留旧内存值和磁盘文件。 */
+    public synchronized boolean updateRecordingBarPlacement(RecordingBarPlacement placement) {
+        java.util.Objects.requireNonNull(placement, "操作栏位置不能为空");
+        if (placement.equals(getRecordingBarPlacement())) return true;
+        Properties previous = new Properties();
+        previous.putAll(properties);
+        properties.setProperty(KEY_RECORDING_BAR_X, Integer.toString(placement.x()));
+        properties.setProperty(KEY_RECORDING_BAR_Y, Integer.toString(placement.y()));
+        properties.setProperty(KEY_RECORDING_BAR_WIDTH, Integer.toString(placement.width()));
+        if (save()) return true;
+        properties.clear();
+        properties.putAll(previous);
+        return false;
     }
 
     /**

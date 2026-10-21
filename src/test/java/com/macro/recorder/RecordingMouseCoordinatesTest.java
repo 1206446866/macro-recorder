@@ -32,8 +32,35 @@ public final class RecordingMouseCoordinatesTest {
         targetHitUsesPhysicalEventPosition();
         controlFilteringKeepsPairing();
         movementSamplingIsUnchanged();
+        sideButtonsAreIgnoredBeforeRecordingAndFiltering();
         captureStillQueriesCurrentPosition();
         System.out.println("通过：事件 A/当前 B、按下释放、移动滚轮、目标命中、控件配对、采样及截图即时坐标");
+    }
+
+    private static void sideButtonsAreIgnoredBeforeRecordingAndFiltering() throws Exception {
+        for (int button : new int[]{NativeMouseEvent.BUTTON4, NativeMouseEvent.BUTTON5}) {
+            Fixture fixture = new Fixture(1.5);
+            var timestamp = MacroRecorder.class.getDeclaredField("lastTime");
+            timestamp.setAccessible(true);
+            long before = timestamp.getLong(fixture.recorder);
+            fixture.recorder.setControlRegionSupplier(() -> new RecordingControlInputFilter.Region(new Rectangle(100,100,100,100),false));
+            fixture.recorder.nativeMousePressed(new NativeMouseEvent(NativeMouseEvent.NATIVE_MOUSE_PRESSED,0,150,150,1,button));
+            check(fixture.recorder.getActions().isEmpty(), "侧键按下进入了录制");
+            check(timestamp.getLong(fixture.recorder)==before, "侧键修改了录制时间戳");
+            fixture.recorder.nativeMouseMoved(mouse(NativeMouseEvent.NATIVE_MOUSE_MOVED,900,600));
+            check(fixture.recorder.getActions().size()==1, "侧键污染过滤状态，阻止了正常鼠标移动");
+            before=timestamp.getLong(fixture.recorder);
+            fixture.recorder.nativeMouseReleased(new NativeMouseEvent(NativeMouseEvent.NATIVE_MOUSE_RELEASED,0,900,600,1,button));
+            check(timestamp.getLong(fixture.recorder)==before, "侧键释放修改了录制时间戳");
+            check(fixture.recorder.pause() && fixture.recorder.getActions().size()==1, "暂停时合成了侧键释放");
+            check(fixture.recorder.resume(), "侧键影响了恢复录制");
+            fixture.recorder.nativeMousePressed(mouse(NativeMouseEvent.NATIVE_MOUSE_PRESSED,900,600));
+            fixture.recorder.nativeMouseReleased(mouse(NativeMouseEvent.NATIVE_MOUSE_RELEASED,900,600));
+            check(fixture.recorder.getActions().size()==3, "忽略侧键后普通左右键配对受损");
+            check(fixture.recorder.getActions().stream().noneMatch(a->a.getMouseButton()!=null&&!a.getMouseButton().isSupported()), "录制包含侧键");
+            fixture.recorder.stop();
+            check(fixture.recorder.getActions().size()==3, "停止时追加了侧键动作");
+        }
     }
 
     private static void pressAndReleaseKeepEventPosition() throws Exception {

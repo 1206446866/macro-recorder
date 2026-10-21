@@ -220,6 +220,8 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
     @Override
     public void nativeMousePressed(NativeMouseEvent e) {
+        MouseButton button = convertMouseButton(e.getButton());
+        if (button == null) return;
         synchronized (recordingLock) {
             if (controlInputFilter.ignoreMousePress(e)
                     || state != RecorderState.RECORDING || !shouldRecordMouse(e)) {
@@ -227,7 +229,6 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             }
             long now = timelineNow(System.currentTimeMillis());
             LogicalPoint point = getLogicalEventPosition(e);
-            MouseButton button = convertMouseButton(e.getButton());
             if (button != null) {
                 MacroAction action = MacroAction.mousePress(
                         point.x(),
@@ -244,6 +245,8 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
     @Override
     public void nativeMouseReleased(NativeMouseEvent e) {
+        MouseButton button = convertMouseButton(e.getButton());
+        if (button == null) return;
         synchronized (recordingLock) {
             boolean recordedPress = pressedMouseButtons.containsKey(e.getButton());
             if (controlInputFilter.ignoreMouseRelease(e, recordedPress)
@@ -252,7 +255,6 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             }
             long now = timelineNow(System.currentTimeMillis());
             LogicalPoint point = getLogicalEventPosition(e);
-            MouseButton button = convertMouseButton(e.getButton());
             if (button != null) {
                 recordAction(MacroAction.mouseRelease(
                         point.x(),
@@ -793,8 +795,6 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             case NativeMouseEvent.BUTTON1 -> MouseButton.LEFT;
             case NativeMouseEvent.BUTTON2 -> MouseButton.RIGHT;
             case NativeMouseEvent.BUTTON3 -> MouseButton.MIDDLE;
-            case NativeMouseEvent.BUTTON4 -> MouseButton.X1;
-            case NativeMouseEvent.BUTTON5 -> MouseButton.X2;
             default -> null;
         };
     }

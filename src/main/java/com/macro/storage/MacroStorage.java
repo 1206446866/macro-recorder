@@ -61,6 +61,16 @@ public class MacroStorage {
             String fileName
     ) throws Exception {
 
+        // 与加载使用相同规则；校验失败时不得创建临时文件或触碰原文件。
+        if (flow != null) {
+            validateFlow(flow);
+        }
+        if (actions != null) {
+            for (int i = 0; i < actions.size(); i++) {
+                validateSupportedMouseButton(actions.get(i), "第 " + (i + 1) + " 个动作：");
+            }
+        }
+
         Path targetPath = Paths.get(fileName).toAbsolutePath();
         Path parentPath = targetPath.getParent();
 
@@ -187,7 +197,7 @@ public class MacroStorage {
                         );
                     }
 
-                    if (button == MouseButton.X1 || button == MouseButton.X2) {
+                    if (!button.isSupported()) {
                         throw new IllegalArgumentException(
                                 prefix + "暂不支持模拟鼠标侧键"
                         );
@@ -251,6 +261,7 @@ public class MacroStorage {
                 }
             }
         }
+        MacroFlowFactory.validateImageJumps(flow);
     }
 
     private void validateImageCheck(MacroNode node) {
@@ -286,6 +297,7 @@ public class MacroStorage {
                     "MR 流程动作节点延迟不能为负数：" + node.getId()
             );
         }
+        validateSupportedMouseButton(action, "MR 流程动作节点 " + node.getId() + "：");
         if ((action.getType() == ActionType.MOUSE_PRESS
                 || action.getType() == ActionType.MOUSE_RELEASE)
                 && action.getMouseButton() == null) {
@@ -299,6 +311,13 @@ public class MacroStorage {
             throw new IllegalArgumentException(
                     "MR 流程动作节点按键码无效：" + node.getId()
             );
+        }
+    }
+
+    private void validateSupportedMouseButton(MacroAction action, String prefix) {
+        if (action != null && (action.getType() == ActionType.MOUSE_PRESS || action.getType() == ActionType.MOUSE_RELEASE)
+                && action.getMouseButton() != null && !action.getMouseButton().isSupported()) {
+            throw new IllegalArgumentException(prefix + "不支持鼠标侧键");
         }
     }
 }

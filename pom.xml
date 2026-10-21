@@ -8,7 +8,7 @@
 
     <groupId>com.macro</groupId>
     <artifactId>recorder</artifactId>
-    <version>1.1.0-beta</version>
+    <version>1.0.0</version>
 
     <name>recorder</name>
     <description>Java macro recorder</description>

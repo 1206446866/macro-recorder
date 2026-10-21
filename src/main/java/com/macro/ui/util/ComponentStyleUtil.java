@@ -126,6 +126,8 @@ public final class ComponentStyleUtil {
         comboBox.setOpaque(true);
         comboBox.setUI(new DarkComboBoxUI(theme));
         updateComboBoxBorder(comboBox, theme, false);
+        comboBox.addPropertyChangeListener("enabled", event ->
+                updateComboBoxBorder(comboBox, theme, comboBox.hasFocus()));
         comboBox.addFocusListener(new FocusAdapter() {
             @Override
             public void focusGained(FocusEvent event) {
@@ -247,7 +249,8 @@ public final class ComponentStyleUtil {
             boolean focused
     ) {
         comboBox.setBorder(BorderFactory.createLineBorder(
-                focused ? theme.accent() : theme.border(),
+                !comboBox.isEnabled() ? theme.controlBackground()
+                        : focused ? theme.accent() : theme.border(),
                 1,
                 true
         ));
@@ -295,6 +298,8 @@ public final class ComponentStyleUtil {
                     SwingConstants.SOUTH
             ));
             button.setName("ComboBox.arrowButton");
+            // 箭头自身按 enabled 状态使用主题色，不交给 LAF 生成灰度图标。
+            button.setDisabledIcon(button.getIcon());
             button.setUI(new ComboArrowButtonUI(theme));
             button.setOpaque(false);
             button.setContentAreaFilled(false);
@@ -309,6 +314,30 @@ public final class ComponentStyleUtil {
         @Override
         protected ComboPopup createPopup() {
             return new DarkComboPopup(comboBox, theme);
+        }
+
+        @Override
+        public void paintCurrentValue(Graphics graphics, Rectangle bounds, boolean hasFocus) {
+            if (comboBox.isEnabled()) {
+                super.paintCurrentValue(graphics, bounds, hasFocus);
+                return;
+            }
+
+            // BasicComboBoxUI 会在调用渲染器后覆盖禁用颜色；这些 LAF 默认值可能为白色。
+            Component value = comboBox.getRenderer().getListCellRendererComponent(
+                    listBox, comboBox.getSelectedItem(), -1, false, false);
+            value.setFont(comboBox.getFont());
+            value.setForeground(theme.textMuted());
+            value.setBackground(theme.targetCard());
+            Rectangle area = new Rectangle(bounds);
+            if (padding != null) {
+                area.x += padding.left;
+                area.y += padding.top;
+                area.width -= padding.left + padding.right;
+                area.height -= padding.top + padding.bottom;
+            }
+            currentValuePane.paintComponent(graphics, value, comboBox,
+                    area.x, area.y, area.width, area.height, value instanceof JPanel);
         }
 
         @Override
@@ -364,7 +393,7 @@ public final class ComponentStyleUtil {
 
             graphics.setColor(fill);
             graphics.fillRect(0, 0, component.getWidth(), component.getHeight());
-            graphics.setColor(theme.border());
+            graphics.setColor(button.isEnabled() ? theme.border() : theme.controlBackground());
             graphics.drawLine(0, 0, 0, component.getHeight());
             super.paint(graphics, component);
         }

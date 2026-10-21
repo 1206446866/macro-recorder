@@ -113,7 +113,7 @@ public class MacroPlayer {
                         throw new IllegalArgumentException(prefix + "缺少鼠标按键");
                     }
 
-                    if (button == MouseButton.X1 || button == MouseButton.X2) {
+                    if (!button.isSupported()) {
                         throw new IllegalArgumentException(prefix + "暂不支持模拟鼠标侧键");
                     }
                 }
@@ -428,14 +428,17 @@ public class MacroPlayer {
             if (node.getType() == NodeType.ACTION) {
                 validateRequiredBranch(node, NodeResult.ALWAYS);
             } else if (node.getType() == NodeType.IMAGE_CHECK) {
-                if (node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.EXECUTE) {
+                if (node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.EXECUTE
+                        || node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.JUMP) {
                     validateRequiredBranch(node, NodeResult.FOUND);
                 }
-                if (node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.EXECUTE) {
+                if (node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.EXECUTE
+                        || node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.JUMP) {
                     validateRequiredBranch(node, NodeResult.NOT_FOUND);
                 }
             }
         }
+        MacroFlowFactory.validateImageJumps(flow);
     }
 
     /** 复用运行时的精确条件及 ALWAYS 后备规则，不要求重试或终止存在普通后继。 */
@@ -493,7 +496,7 @@ public class MacroPlayer {
                 if (button == null) {
                     throw new IllegalArgumentException(prefix + "缺少鼠标按键");
                 }
-                if (button == MouseButton.X1 || button == MouseButton.X2) {
+                if (!button.isSupported()) {
                     throw new IllegalArgumentException(prefix + "暂不支持模拟鼠标侧键");
                 }
             }

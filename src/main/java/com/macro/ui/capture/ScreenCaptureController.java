@@ -28,6 +28,8 @@ public final class ScreenCaptureController {
     private final Runnable onCancelled;
     private final Consumer<Throwable> onFailed;
     private final boolean hideAllApplicationWindows;
+    private final CaptureSource captureSource;
+    private long captureStartedNanos;
     /** 只恢复本次截图前确实可见的窗口，不复活截图期间已关闭的窗口。 */
     private final List<VisibleWindowState> hiddenWindows = new ArrayList<>();
 
@@ -73,11 +75,20 @@ public final class ScreenCaptureController {
     /** 录制截图可隐藏本进程所有可见窗口，普通采集页面仍沿用原来的所属窗口行为。 */
     public ScreenCaptureController(JFrame owner, Consumer<BufferedImage> onCaptured,
             Runnable onCancelled, Consumer<Throwable> onFailed, boolean hideAllApplicationWindows) {
+        this(owner, onCaptured, onCancelled, onFailed, hideAllApplicationWindows,
+                (device, bounds) -> new Robot(device).createMultiResolutionScreenCapture(bounds));
+    }
+
+    /** 包内采集替身仅用于隔离测试，不改变正式的 Robot 捕获和冻结框选流程。 */
+    ScreenCaptureController(JFrame owner, Consumer<BufferedImage> onCaptured,
+            Runnable onCancelled, Consumer<Throwable> onFailed, boolean hideAllApplicationWindows,
+            CaptureSource captureSource) {
         this.owner = Objects.requireNonNull(owner, "主窗口不能为空");
         this.onCaptured = Objects.requireNonNull(onCaptured, "截图回调不能为空");
         this.onCancelled = Objects.requireNonNull(onCancelled, "取消回调不能为空");
         this.onFailed = Objects.requireNonNull(onFailed, "失败回调不能为空");
         this.hideAllApplicationWindows = hideAllApplicationWindows;
+        this.captureSource = Objects.requireNonNull(captureSource);
     }
 
     /** 开始一次截图。重复调用时会忽略尚未结束的截图请求。 */
@@ -92,6 +103,7 @@ public final class ScreenCaptureController {
         }
 
         capturing = true;
+        captureStartedNanos = System.nanoTime();
         long sessionId = ++sessionSequence;
         activeSessionId = sessionId;
         ownerWasVisible = owner.isVisible();
@@ -107,6 +119,11 @@ public final class ScreenCaptureController {
             hideCaptureWindows();
         } catch (RuntimeException exception) {
             failCapture(sessionId, exception);
+            return;
+        }
+        if (hideAllApplicationWindows) {
+            // 录制专用路径：窗口已立即遮蔽，直接启动后台同步与采集，不等待隐藏动画。
+            captureScreen(sessionId, device);
             return;
         }
         Toolkit.getDefaultToolkit().sync();
@@ -132,7 +149,11 @@ public final class ScreenCaptureController {
             hiddenWindows.add(new VisibleWindowState(owner, ownerExtendedState));
         }
         for (int index = hiddenWindows.size() - 1; index >= 0; index--) {
-            hiddenWindows.get(index).window.setVisible(false);
+            VisibleWindowState saved = hiddenWindows.get(index);
+            WindowsCaptureSupport.Cloak cloak = hideAllApplicationWindows
+                    ? WindowsCaptureSupport.cloak(saved.window) : WindowsCaptureSupport.Cloak.UNAVAILABLE;
+            hiddenWindows.set(index, new VisibleWindowState(saved.window, saved.extendedState, cloak));
+            saved.window.setVisible(false);
         }
     }
 
@@ -153,15 +174,33 @@ public final class ScreenCaptureController {
             return;
         }
         captureTimer = null;
+        boolean immediatelyHidden = hiddenWindows.stream().allMatch(saved -> saved.cloak.available());
+        long startedNanos = captureStartedNanos;
         captureWorker = new SwingWorker<>() {
             @Override
             protected ScreenSnapshot doInBackground() throws Exception {
+                long syncStarted = System.nanoTime();
+                boolean immediateCapture = hideAllApplicationWindows && immediatelyHidden;
+                if (hideAllApplicationWindows) {
+                    Toolkit.getDefaultToolkit().sync();
+                    if (!immediatelyHidden || !WindowsCaptureSupport.flush()) {
+                        immediateCapture = false;
+                        // 原生同步不可用时保留原有保守等待，仅在工作线程等待。
+                        Thread.sleep(CAPTURE_DELAY_MILLIS);
+                    }
+                }
+                if (isCancelled()) throw new CancellationException();
+                long captureStarted = System.nanoTime();
                 GraphicsConfiguration configuration = device.getDefaultConfiguration();
                 Rectangle screenBounds = configuration.getBounds();
-                Robot robot = new Robot(device);
-                MultiResolutionImage capture =
-                        robot.createMultiResolutionScreenCapture(screenBounds);
+                MultiResolutionImage capture = captureSource.capture(device, screenBounds);
                 BufferedImage image = copyHighestResolutionVariant(capture);
+                if (Boolean.getBoolean("macro.capture.timing")) {
+                    long finished = System.nanoTime();
+                    System.out.printf("capture timing: immediate=%s sync=%.2f capture=%.2f requestToImage=%.2f ms%n",
+                            immediateCapture, (captureStarted-syncStarted)/1e6,
+                            (finished-captureStarted)/1e6, (finished-startedNanos)/1e6);
+                }
                 return new ScreenSnapshot(image, screenBounds, configuration);
             }
 
@@ -234,6 +273,9 @@ public final class ScreenCaptureController {
 
     /** 显示冻结画面的区域选择窗口。 */
     private void showSelectionOverlay(long sessionId, ScreenSnapshot snapshot) {
+        // 所属窗口的遮蔽可被子窗口继承；图像已经采集，先解除临时遮蔽再显示框选层。
+        // 原窗口仍保持 Swing 隐藏，不会重新进入这张冻结图像。
+        for (VisibleWindowState saved : hiddenWindows) saved.cloak.close();
         overlay = new ScreenSelectionOverlay(
                 owner,
                 snapshot.image(),
@@ -308,9 +350,15 @@ public final class ScreenCaptureController {
         }
 
         for (VisibleWindowState saved : hiddenWindows) {
-            if (!saved.window.isDisplayable()) continue;
-            if (saved.window instanceof Frame frame) frame.setExtendedState(saved.extendedState);
-            saved.window.setVisible(true);
+            try {
+                if (!saved.window.isDisplayable()) continue;
+                if (saved.window instanceof Frame frame) frame.setExtendedState(saved.extendedState);
+                saved.window.setVisible(true);
+            } catch (RuntimeException failure) {
+                System.err.println("截图结束后恢复窗口失败：" + failure.getMessage());
+            } finally {
+                saved.cloak.close();
+            }
         }
         hiddenWindows.clear();
         if (ownerWasVisible) {
@@ -321,7 +369,16 @@ public final class ScreenCaptureController {
         }
     }
 
-    private record VisibleWindowState(Window window, int extendedState) { }
+    private record VisibleWindowState(Window window, int extendedState, WindowsCaptureSupport.Cloak cloak) {
+        private VisibleWindowState(Window window, int extendedState) {
+            this(window, extendedState, WindowsCaptureSupport.Cloak.UNAVAILABLE);
+        }
+    }
+
+    @FunctionalInterface
+    interface CaptureSource {
+        MultiResolutionImage capture(GraphicsDevice device, Rectangle bounds) throws Exception;
+    }
 
     /** 判断回调是否仍属于当前截图会话。 */
     private boolean isCurrentSession(long sessionId) {

@@ -63,7 +63,7 @@ public final class MacroFlowFactory {
     /**
      * 按时间线顺序重建默认分支。
      *
-     * <p>图像检查按成功和失败行为分别连接自身、后继或终点。</p>
+     * <p>图像检查按成功和失败行为分别连接自身、后继、终点或保留指定目标引用。</p>
      *
      * @param timelineNodes 按显示顺序排列的节点
      * @param preferredEndId 希望复用的 END 节点 ID
@@ -96,9 +96,9 @@ public final class MacroFlowFactory {
                 config.setRetryDelay(retryDelay);
                 node.setChildren(new ArrayList<>(List.of(
                         imageBranch(BranchCondition.FOUND, config.getSuccessBehavior(),
-                                node.getId(), nextId, endId, retryDelay),
+                                node.getId(), nextId, endId, retryDelay, branchFor(node, BranchCondition.FOUND)),
                         imageBranch(BranchCondition.NOT_FOUND, config.getFailureBehavior(),
-                                node.getId(), nextId, endId, retryDelay)
+                                node.getId(), nextId, endId, retryDelay, branchFor(node, BranchCondition.NOT_FOUND))
                 )));
             } else {
                 node.setChildren(new ArrayList<>(List.of(
@@ -123,12 +123,67 @@ public final class MacroFlowFactory {
 
     /** 终止分支保留合法 END 引用，播放器依据配置退出整个任务而非开始下一轮。 */
     private static MacroBranch imageBranch(BranchCondition condition, ImageCheckBehavior behavior,
-            String currentId, String nextId, String endId, long retryDelay) {
+            String currentId, String nextId, String endId, long retryDelay, MacroBranch previous) {
         return new MacroBranch(condition, switch (behavior) {
             case RETRY -> currentId;
             case EXECUTE -> nextId;
             case TERMINATE -> endId;
-        }, behavior == ImageCheckBehavior.RETRY ? retryDelay : 0L);
+            case JUMP -> previous == null ? null : previous.getTargetId();
+        }, behavior == ImageCheckBehavior.RETRY ? retryDelay
+                : behavior == ImageCheckBehavior.JUMP && previous != null ? previous.getDelay() : 0L);
+    }
+
+    /** 与播放器一致：精确条件优先，ALWAYS 为旧流程的后备。 */
+    public static MacroBranch branchFor(MacroNode node, BranchCondition condition) {
+        MacroBranch fallback = null;
+        if (node.getChildren() != null) for (MacroBranch branch : node.getChildren()) {
+            if (branch == null) continue;
+            if (branch.getCondition() == condition) return branch;
+            if (branch.getCondition() == BranchCondition.ALWAYS) fallback = branch;
+        }
+        return fallback;
+    }
+
+    /** 新跳转只引用其他可见节点；不修复/重定向已删除引用，也不限制旧重试循环。 */
+    public static void validateImageJumps(MacroFlow flow) {
+        Map<String, MacroNode> nodes = flow.getNodeMap();
+        Set<String> jumps = new HashSet<>(), exits = new HashSet<>();
+        Map<String, List<String>> predecessors = new HashMap<>();
+        for (MacroNode node : nodes.values()) {
+            if (node.getType() == NodeType.END) { exits.add(node.getId()); continue; }
+            if (node.getType() == NodeType.IMAGE_CHECK && node.getImageCheckConfig() != null) {
+                for (BranchCondition result : List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND)) {
+                    ImageCheckBehavior behavior = result == BranchCondition.FOUND
+                            ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
+                    if (behavior == ImageCheckBehavior.RETRY || behavior == ImageCheckBehavior.TERMINATE) {
+                        // 明确配置的重试是允许的用户循环，不添加次数限制。
+                        exits.add(node.getId());
+                        continue;
+                    }
+                    MacroBranch branch = branchFor(node, result);
+                    if (behavior == ImageCheckBehavior.JUMP) {
+                        jumps.add(node.getId());
+                        MacroNode target = branch == null ? null : nodes.get(branch.getTargetId());
+                        if (target == null || target.getType() == NodeType.END || target == node) {
+                            throw new IllegalArgumentException("节点 " + node.getId() + " 的 " + result
+                                    + " 跳转目标不存在或无效；重试当前节点请使用重试行为");
+                        }
+                    }
+                    if (branch != null) predecessors.computeIfAbsent(branch.getTargetId(), k -> new ArrayList<>()).add(node.getId());
+                }
+            } else {
+                MacroBranch branch = branchFor(node, BranchCondition.ALWAYS);
+                if (branch != null) predecessors.computeIfAbsent(branch.getTargetId(), k -> new ArrayList<>()).add(node.getId());
+            }
+        }
+        if (jumps.isEmpty()) return;
+        ArrayDeque<String> pending = new ArrayDeque<>(exits);
+        while (!pending.isEmpty()) for (String previous : predecessors.getOrDefault(pending.removeFirst(), List.of())) {
+            if (exits.add(previous)) pending.addLast(previous);
+        }
+        for (String id : jumps) if (!exits.contains(id)) {
+            throw new IllegalArgumentException("节点 " + id + " 的指定跳转形成无出口闭环；请配置退出分支或明确的重试行为");
+        }
     }
 
     /** 创建不会与现有节点冲突的新节点 ID。 */

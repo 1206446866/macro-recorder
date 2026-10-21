@@ -4,7 +4,7 @@ import com.macro.model.MacroAction;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.AbstractList;
+import java.util.List;
 import java.util.Arrays;
 
 public class MacroStorageFailureTest {
@@ -19,22 +19,18 @@ public class MacroStorageFailureTest {
         Files.write(target, originalContent);
 
         // 模拟序列化动作列表时发生异常。
-        var brokenActions = new AbstractList<MacroAction>() {
+        var brokenAction = new MacroAction() {
             @Override
-            public MacroAction get(int index) {
+            public int getX() {
                 throw new IllegalStateException("模拟动作数据读取失败");
             }
-
-            @Override
-            public int size() {
-                return 1;
-            }
         };
+        brokenAction.setType(com.macro.model.ActionType.MOUSE_MOVE);
 
         MacroStorage storage = new MacroStorage();
 
         try {
-            storage.save(brokenActions, null, target.toString());
+            storage.save(List.of(brokenAction), null, target.toString());
             throw new AssertionError("测试失败：预期保存抛出异常");
         } catch (IllegalStateException e) {
             System.out.println("异常传递测试通过：" + e.getMessage());

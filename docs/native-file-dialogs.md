@@ -1,5 +1,7 @@
 # 原生文件面板接入与验收
 
+本文保留原生面板专项的实现与历史验收记录。当前项目及后续保存前流程校验见 [文档索引](README.md)，最新自动测试结果见 [自动测试](automated-tests.md)；本次文档同步不重新操作原生面板、不执行干净构建。
+
 文件选择统一调用 `FileDialogService.showDialog(parent, options)`。确认返回 `Optional<File>`，取消返回空结果；平台不支持或原生调用失败抛出 `FileDialogException`，由已有 `AppMessageDialog` 显示。
 
 ## 类与边界

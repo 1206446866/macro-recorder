@@ -21,8 +21,8 @@ public class ImageCheckBehaviorTest {
 
     public static void main(String[] args) throws Exception {
         testCompatibility();
-        for (ImageCheckBehavior success : ImageCheckBehavior.values()) {
-            for (ImageCheckBehavior failure : ImageCheckBehavior.values()) {
+        for (ImageCheckBehavior success : List.of(ImageCheckBehavior.RETRY, ImageCheckBehavior.EXECUTE, ImageCheckBehavior.TERMINATE)) {
+            for (ImageCheckBehavior failure : List.of(ImageCheckBehavior.RETRY, ImageCheckBehavior.EXECUTE, ImageCheckBehavior.TERMINATE)) {
                 testCombination(success, failure, true);
                 testCombination(success, failure, false);
                 testPersistence(success, failure);

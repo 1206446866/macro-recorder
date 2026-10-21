@@ -4,7 +4,8 @@ package com.macro.flow;
 public enum ImageCheckBehavior {
     RETRY("重试"),
     EXECUTE("执行"),
-    TERMINATE("终止");
+    TERMINATE("终止"),
+    JUMP("跳转到指定节点");
 
     private final String displayName;
 

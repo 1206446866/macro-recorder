@@ -65,6 +65,7 @@ public class ActionTimelinePanel extends JPanel {
     private final JLabel totalDurationValue;
     /** 按时间线显示顺序保存的可见节点，不包含内部 END 节点。 */
     private final List<MacroNode> nodes = new ArrayList<>();
+    private java.util.Map<String, String> displayNumbers = java.util.Map.of();
 
     /** 当前时间线对应的完整流程图，是节点编辑和播放的权威数据。
      * -- GETTER --
@@ -144,7 +145,7 @@ public class ActionTimelinePanel extends JPanel {
 
         JScrollPane scrollPane = new JScrollPane(
                 timelinePanel,
-                ScrollPaneConstants.VERTICAL_SCROLLBAR_NEVER,
+                ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED,
                 ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED
         );
         scrollPane.setOpaque(false);
@@ -333,6 +334,9 @@ public class ActionTimelinePanel extends JPanel {
         cancelInlineEdit();
         timelineRevision++;
         timelinePanel.removeAll();
+        displayNumbers = TimelineNodeNumbers.labels(nodes);
+        int branchCount = jumpEdges().size();
+        timelinePanel.setBorder(new EmptyBorder(10, 50, branchCount == 0 ? 80 : 110 + branchCount * 32, 50));
         updateSummary();
 
         if (nodes.isEmpty()) {
@@ -355,7 +359,7 @@ public class ActionTimelinePanel extends JPanel {
             timelinePanel.add(Box.createHorizontalStrut(4));
             for (int index = 0; index < nodes.size(); index++) {
                 MacroNode node = nodes.get(index);
-                timelinePanel.add(createActionNode(node));
+                timelinePanel.add(createActionNode(node, displayNumbers.get(node.getId())));
                 if (index < nodes.size() - 1) {
                     // 延迟属于后一个动作，表示当前节点与后一个节点之间的等待时间。
                     timelinePanel.add(createDelayConnector(node, nodes.get(index + 1)));
@@ -396,9 +400,10 @@ public class ActionTimelinePanel extends JPanel {
         return card;
     }
 
-    private NodePanel createActionNode(MacroNode macroNode) {
+    private NodePanel createActionNode(MacroNode macroNode, String displayNumber) {
         NodePanel node = new NodePanel();
         node.macroNode = macroNode;
+        node.displayNumber = displayNumber;
         node.setPreferredSize(new Dimension(NODE_WIDTH, NODE_HEIGHT));
         node.setMinimumSize(new Dimension(NODE_WIDTH, NODE_HEIGHT));
         node.setMaximumSize(new Dimension(NODE_WIDTH, NODE_HEIGHT));
@@ -509,6 +514,38 @@ public class ActionTimelinePanel extends JPanel {
                 : success ? "识别成功" : failure ? "未找到" : "";
     }
 
+    /** 直接读取有效分支引用；指定相邻目标也走独立跳转轨道。 */
+    private List<TimelineBranchLayout.Edge> jumpEdges() {
+        List<TimelineBranchLayout.Edge> result = new ArrayList<>();
+        for (int i = 0; i < nodes.size(); i++) {
+            MacroNode node = nodes.get(i);
+            if (node.getType() != NodeType.IMAGE_CHECK || node.getImageCheckConfig() == null) continue;
+            for (BranchCondition condition : List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND)) {
+                ImageCheckBehavior behavior = condition == BranchCondition.FOUND
+                        ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
+                if (behavior != ImageCheckBehavior.JUMP && behavior != ImageCheckBehavior.EXECUTE) continue;
+                var branch = MacroFlowFactory.branchFor(node, condition);
+                if (branch == null) continue;
+                String target = branch.getTargetId();
+                int targetIndex = -1;
+                for (int j = 0; j < nodes.size(); j++) if (Objects.equals(nodes.get(j).getId(), target)) { targetIndex = j; break; }
+                if (targetIndex < 0 || targetIndex == i || behavior == ImageCheckBehavior.EXECUTE && targetIndex == i + 1) continue;
+                result.add(new TimelineBranchLayout.Edge(node.getId(), target,
+                        (condition == BranchCondition.FOUND ? "成功" : "未找到") + " · "
+                                + (targetIndex > i ? "前跳" : "回跳") + " " + displayNumbers.get(target)));
+            }
+        }
+        return result;
+    }
+
+    private static boolean defaultBranchTo(MacroNode node, BranchCondition condition, String targetId) {
+        if (node.getImageCheckConfig() == null) return false;
+        ImageCheckBehavior behavior = condition == BranchCondition.FOUND
+                ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
+        var branch = MacroFlowFactory.branchFor(node, condition);
+        return behavior == ImageCheckBehavior.EXECUTE && branch != null && Objects.equals(branch.getTargetId(), targetId);
+    }
+
     private JComponent createDelayConnector(MacroNode previousNode, MacroNode macroNode) {
         JPanel connector = new JPanel();
         connector.setOpaque(false);
@@ -521,7 +558,10 @@ public class ActionTimelinePanel extends JPanel {
         connector.setAlignmentY(Component.TOP_ALIGNMENT);
 
         if (imageBranch) {
-            String conditions = behaviorConditions(previousNode, ImageCheckBehavior.EXECUTE);
+            String nextId = macroNode == null ? MacroFlowFactory.findEndId(flow) : macroNode.getId();
+            boolean success = defaultBranchTo(previousNode, BranchCondition.FOUND, nextId);
+            boolean failure = defaultBranchTo(previousNode, BranchCondition.NOT_FOUND, nextId);
+            String conditions = success && failure ? "成功 / 未找到" : success ? "识别成功" : failure ? "未找到" : "";
             if (conditions.isEmpty()) {
                 // 没有执行分支时保留节点间距，但不能绘制通向后续节点的箭头。
                 return connector;
@@ -812,17 +852,13 @@ public class ActionTimelinePanel extends JPanel {
         Consumer<java.awt.event.ActionEvent> editRequest = guardEditCallback(event -> {
             if (onActionEditRequested != null) onActionEditRequested.accept(macroNode);
         });
-        edit.addActionListener(event -> {
-            editRequest.accept(event);
-        });
+        edit.addActionListener(editRequest::accept);
         JMenuItem insert = createMenuItem("插入动作", IconType.INSERT);
         insert.setEnabled(isEditingAllowed());
         Consumer<java.awt.event.ActionEvent> insertRequest = guardEditCallback(event -> {
             if (onActionInsertRequested != null) onActionInsertRequested.accept(macroNode);
         });
-        insert.addActionListener(event -> {
-            insertRequest.accept(event);
-        });
+        insert.addActionListener(insertRequest::accept);
         JMenuItem delete = createMenuItem("删除动作", IconType.DELETE);
         delete.setEnabled(isEditingAllowed());
         Consumer<java.awt.event.ActionEvent> deleteRequest = guardEditCallback(event -> deleteAndNotify(macroNode));
@@ -959,7 +995,7 @@ public class ActionTimelinePanel extends JPanel {
         return IconType.MOUSE;
     }
 
-    private String getNodeName(MacroNode node) {
+    static String getNodeName(MacroNode node) {
         return node.getType() == NodeType.IMAGE_CHECK
                 ? "图像识别"
                 : getActionName(node.getAction());
@@ -980,7 +1016,7 @@ public class ActionTimelinePanel extends JPanel {
         return getActionDetail(node.getAction());
     }
 
-    private String getActionName(MacroAction action) {
+    private static String getActionName(MacroAction action) {
         return switch (action.getType()) {
             case MOUSE_MOVE -> "鼠标移动";
             case MOUSE_PRESS -> "鼠标按下";
@@ -1020,8 +1056,7 @@ public class ActionTimelinePanel extends JPanel {
             case LEFT -> "左键";
             case MIDDLE -> "中键";
             case RIGHT -> "右键";
-            case X1 -> "侧键1";
-            case X2 -> "侧键2";
+            case X1, X2 -> "不支持的按键";
         };
     }
 
@@ -1139,6 +1174,7 @@ public class ActionTimelinePanel extends JPanel {
     private final class NodePanel extends JPanel {
         private boolean selected;
         private MacroNode macroNode;
+        private String displayNumber;
 
         private NodePanel() {
             setOpaque(false);
@@ -1147,6 +1183,25 @@ public class ActionTimelinePanel extends JPanel {
         private void setSelected(boolean selected) {
             this.selected = selected;
             repaint();
+        }
+
+        /** 叠加绘制，不增加子组件、边距或布局占位。 */
+        @Override
+        protected void paintChildren(Graphics graphics) {
+            super.paintChildren(graphics);
+            if (displayNumber == null || displayNumber.isEmpty()) return;
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setFont(getFont().deriveFont(Font.BOLD, 10f));
+                FontMetrics metrics = g2.getFontMetrics();
+                int width = metrics.stringWidth(displayNumber) + 12;
+                g2.setColor(selected ? blend(THEME.controlBackground(), THEME.accent(), .18f)
+                        : THEME.controlBackground());
+                g2.fillRoundRect(8, 7, width, 18, 8, 8);
+                g2.setColor(selected ? THEME.textPrimary() : THEME.textSecondary());
+                g2.drawString(displayNumber, 14, 7 + (18 - metrics.getHeight()) / 2 + metrics.getAscent());
+            } finally { g2.dispose(); }
         }
 
         @Override
@@ -1286,6 +1341,22 @@ public class ActionTimelinePanel extends JPanel {
             positionRetryEditor();
         }
 
+        List<TimelineBranchLayout.Route> branchRoutes() {
+            java.util.Map<String, Rectangle> bounds = new java.util.LinkedHashMap<>();
+            int sequenceY = Integer.MIN_VALUE;
+            for (Component component : getComponents()) if (component instanceof NodePanel node) {
+                bounds.put(node.macroNode.getId(), node.getBounds());
+            }
+            for (Component component : getComponents()) if (component instanceof Container connector) {
+                for (Component child : connector.getComponents()) if (child instanceof ArrowComponent) {
+                    sequenceY = Math.max(sequenceY,
+                            SwingUtilities.convertPoint(child, 0, child.getHeight() / 2, this).y);
+                }
+            }
+            return sequenceY == Integer.MIN_VALUE ? TimelineBranchLayout.routes(bounds, jumpEdges())
+                    : TimelineBranchLayout.routes(bounds, jumpEdges(), sequenceY);
+        }
+
         private void positionRetryEditor() {
             if (retryEditor == null) return;
             for (Component component : getComponents()) {
@@ -1335,7 +1406,47 @@ public class ActionTimelinePanel extends JPanel {
                     }
                 }
             }
+            List<TimelineBranchLayout.Route> routes = branchRoutes();
+            for (TimelineBranchLayout.Route route : routes) drawJump(g2, route);
+            for (TimelineBranchLayout.Route route : routes) drawJumpLabel(g2, route, routes);
             g2.dispose();
+        }
+
+        private void drawJump(Graphics2D graphics, TimelineBranchLayout.Route route) {
+            Path2D path = TimelineBranchLayout.path(route);
+            // 交叉处留出细小断口，避免多条轨道看起来合并为一条线。
+            graphics.setColor(THEME.card());
+            graphics.setStroke(new BasicStroke(5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            graphics.draw(path);
+            graphics.setColor(route.forward() ? THEME.accent() : THEME.danger());
+            graphics.setStroke(new BasicStroke(1.7f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+            List<Point> points = route.points();
+            graphics.draw(path);
+            Point end = points.get(points.size() - 1);
+            int direction = route.forward() ? 1 : -1;
+            graphics.drawLine(end.x - direction * 7, end.y - 4, end.x, end.y);
+            graphics.drawLine(end.x - direction * 7, end.y + 4, end.x, end.y);
+        }
+
+        private void drawJumpLabel(Graphics2D graphics, TimelineBranchLayout.Route route,
+                List<TimelineBranchLayout.Route> routes) {
+            graphics.setColor(route.forward() ? THEME.accent() : THEME.danger());
+            graphics.setFont(getFont().deriveFont(Font.PLAIN, 11f));
+            FontMetrics metrics = graphics.getFontMetrics();
+            String text = route.edge().label();
+            Rectangle label = TimelineBranchLayout.labelBounds(route, routes, metrics.stringWidth(text), getWidth());
+            int center = label.x + label.width / 2;
+            int left = Math.min(route.points().get(2).x, route.points().get(3).x);
+            int right = Math.max(route.points().get(2).x, route.points().get(3).x);
+            graphics.drawLine(Math.max(left, Math.min(center, right)), route.laneY(), center, route.laneY());
+            Color color = graphics.getColor();
+            graphics.setColor(THEME.targetCard());
+            graphics.fillRoundRect(label.x, label.y, label.width, label.height, 10, 10);
+            graphics.setColor(blend(THEME.border(), color, .35f));
+            graphics.setStroke(new BasicStroke(1f));
+            graphics.drawRoundRect(label.x, label.y, label.width, label.height, 10, 10);
+            graphics.setColor(color);
+            graphics.drawString(text, label.x + 10, route.laneY() + 4);
         }
 
         /** 绘制从节点右侧发出、在左侧以向右箭头回收的闭合分支。 */
@@ -1348,7 +1459,7 @@ public class ActionTimelinePanel extends JPanel {
             graphics.setColor(THEME.accent());
             int left = node.getX();
             int right = node.getX() + node.getWidth() - 1;
-            int entryY = node.getY() + node.getHeight() - 42;
+            int entryY = node.getY() + node.getHeight() - TimelineBranchLayout.RETRY_PORT_BOTTOM_OFFSET;
             int bottomY = node.getY()
                     + node.getHeight()
                     + SELF_LOOP_BOTTOM_OFFSET;
@@ -1447,7 +1558,7 @@ public class ActionTimelinePanel extends JPanel {
 
         @Override
         public boolean getScrollableTracksViewportHeight() {
-            return true;
+            return getParent() == null || getParent().getHeight() >= getPreferredSize().height;
         }
     }
 
