@@ -7,6 +7,7 @@ import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.platform.win32.WinDef.RECT;
 import com.sun.jna.platform.win32.WinUser;
 
+/** 集中声明窗口查找、信息读取和前台激活使用的 Windows 原生接口。 */
 public interface User32Api extends Library {
 
     /**

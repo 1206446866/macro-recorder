@@ -23,6 +23,7 @@ public final class WindowsWindowUtil {
     /** 恢复窗口显示。 */
     private static final int SW_RESTORE = 9;
 
+    /** 窗口查询与激活通过静态方法使用，无需创建工具实例。 */
     private WindowsWindowUtil() {
     }
 

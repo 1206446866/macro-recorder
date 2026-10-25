@@ -7,6 +7,7 @@ import java.util.*;
 /** 创建和读取当前线性时间线使用的流程图。 */
 public final class MacroFlowFactory {
 
+    /** 流程工厂只提供静态构建和校验入口，无需创建实例。 */
     private MacroFlowFactory() {
     }
 
@@ -73,6 +74,12 @@ public final class MacroFlowFactory {
             List<MacroNode> timelineNodes,
             String preferredEndId
     ) {
+        return rebuildLinear(timelineNodes, preferredEndId, null);
+    }
+
+    /** 编辑或重新录制时沿用当前宏的头部等待，不改动动作与分支身份。 */
+    public static MacroFlow rebuildLinear(List<MacroNode> timelineNodes,
+                                          String preferredEndId, Long headWaitMillis) {
         List<MacroNode> nodes = timelineNodes == null
                 ? new ArrayList<>()
                 : new ArrayList<>(timelineNodes);
@@ -117,8 +124,16 @@ public final class MacroFlowFactory {
         nodeMap.put(endId, end);
         return new MacroFlow(
                 nodes.isEmpty() ? endId : nodes.get(0).getId(),
-                nodeMap
+                nodeMap,
+                headWaitMillis
         );
+    }
+
+    /** 存储与播放共用等待值校验；允许零等待和旧文件的缺省值。 */
+    public static void validateHeadWait(MacroFlow flow) {
+        if (flow.getHeadWaitMillis() != null && flow.getHeadWaitMillis() < 0L) {
+            throw new IllegalArgumentException("头部待机延迟不能为负数");
+        }
     }
 
     /** 终止分支保留合法 END 引用，播放器依据配置退出整个任务而非开始下一轮。 */
@@ -220,6 +235,7 @@ public final class MacroFlowFactory {
                 .orElse(1_000L);
     }
 
+    /** 保留已有节点标识，仅为尚未分配 ID 的节点生成新标识。 */
     private static String ensureNodeId(MacroNode node) {
         if (node.getId() == null || node.getId().isBlank()) {
             node.setId(newNodeId());

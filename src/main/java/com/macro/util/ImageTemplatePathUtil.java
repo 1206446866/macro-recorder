@@ -15,8 +15,10 @@ import java.util.Map;
 
 /** 统一模板引用的 MR 目录基准；没有已保存宏时沿用工作目录。 */
 public final class ImageTemplatePathUtil {
+    /** 模板路径规则由静态入口统一提供，无需创建实例。 */
     private ImageTemplatePathUtil() { }
 
+    /** 保留绝对路径，或按当前 MR 所在目录解析相对路径，并规范化其中的目录段。 */
     public static Path resolve(String imagePath, File macroDirectory) {
         if (imagePath == null || imagePath.isBlank()) {
             throw new IllegalArgumentException("模板路径不能为空");
@@ -67,9 +69,10 @@ public final class ImageTemplatePathUtil {
             entry.setValue(new MacroNode(node.getId(), node.getType(), node.getAction(), copy, node.getChildren()));
             changed = true;
         }
-        return changed ? new MacroFlow(flow.getStartId(), nodes) : flow;
+        return changed ? new MacroFlow(flow.getStartId(), nodes, flow.getHeadWaitMillis()) : flow;
     }
 
+    /** 取得绝对且规范化的基准目录；宏尚未保存时沿用当前工作目录。 */
     private static Path basePath(File directory) {
         return (directory == null ? Path.of("") : directory.toPath()).toAbsolutePath().normalize();
     }

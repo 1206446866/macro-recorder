@@ -15,7 +15,10 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.function.Supplier;
 
-/** 使用现有 OpenCV 屏幕识别服务执行 IMAGE_CHECK 节点。 */
+/**
+ * 将图像检查节点接入现有 OpenCV 屏幕识别服务，供播放器执行成功或失败分支。
+ * 负责模板路径解析、读取缓存和匹配结果转换，不选择分支，也不发送键鼠输入。
+ */
 public final class OpenCvImageMatcher implements ImageMatcher {
 
     /** 复用已有的屏幕采集、DPI 换算和 OpenCV 模板匹配服务。 */
@@ -43,6 +46,12 @@ public final class OpenCvImageMatcher implements ImageMatcher {
         this.baseDirectorySupplier = baseDirectorySupplier;
     }
 
+    /**
+     * 播放前检查节点配置和模板文件，避免执行输入动作后才发现模板不可用。
+     *
+     * @throws IllegalArgumentException 配置缺失、路径为空或格式非法、阈值超出有效范围
+     * @throws IOException 模板路径不存在或不是普通文件；此检查不解码图片
+     */
     @Override
     public void validate(MacroNode node) throws IOException {
         validateConfig(node, node.getImageCheckConfig());
@@ -51,10 +60,11 @@ public final class OpenCvImageMatcher implements ImageMatcher {
     }
 
     /**
-     * 截取所有显示器并使用 OpenCV 匹配当前节点配置的模板。
+     * 截取所有显示器并匹配当前模板，返回相似度最高的命中及其屏幕逻辑坐标。
+     * 未命中时仍保留最佳候选的相似度；采集或匹配异常继续交由播放器处理。
      *
      * @param node 当前 IMAGE_CHECK 节点
-     * @param context 本轮流程上下文，预留给后续识别策略使用
+     * @param context 本轮流程上下文，当前匹配实现不读取或修改其中的状态
      * @return 包含最佳相似度及逻辑坐标区域的匹配结果
      * @throws Exception 截屏、模板读取或 OpenCV 匹配失败
      */
@@ -90,8 +100,7 @@ public final class OpenCvImageMatcher implements ImageMatcher {
                     recognitionService.recognize(
                             snapshots,
                             template,
-                            config.getThreshold(),
-                            ScreenRecognitionService.RecognitionEngine.OPEN_CV
+                            config.getThreshold()
                     );
 
             ImageMatchResult result;
@@ -126,7 +135,7 @@ public final class OpenCvImageMatcher implements ImageMatcher {
         }
     }
 
-    /** 校验播放所需的模板路径和阈值。 */
+    /** 检查配置、非空模板路径及 0～1 的有限阈值；此处不访问模板文件。 */
     private void validateConfig(MacroNode node, ImageCheckConfig config) {
         if (config == null) {
             throw new IllegalArgumentException(
@@ -149,13 +158,17 @@ public final class OpenCvImageMatcher implements ImageMatcher {
         }
     }
 
-    /** 将相对模板路径按当前 MR 文件目录解析为绝对路径。 */
+    /** 按当前 MR 目录和公共路径规则解析模板，绝对路径仍沿用原文件位置。 */
     private Path resolvePath(String imagePath) {
         return ImageTemplatePathUtil.resolve(imagePath,
                 baseDirectorySupplier == null ? null : baseDirectorySupplier.get());
     }
 
-    /** 按路径和修改时间缓存模板，闭环重试时不重复解码 PNG。 */
+    /**
+     * 读取模板像素；路径与文件修改时间均未变化时复用上次结果，减少重试时的重复解码。
+     *
+     * @throws IOException 文件不存在或无法解码为图片，失败时不覆盖原有缓存
+     */
     private synchronized BufferedImage loadTemplate(Path path) throws IOException {
         File file = path.toFile();
         if (!file.isFile()) {

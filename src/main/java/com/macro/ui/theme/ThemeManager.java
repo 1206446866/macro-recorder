@@ -11,6 +11,7 @@ public final class ThemeManager {
     @Getter
     private static ThemePalette palette = DarkTheme.createPalette();
 
+    /** 主题状态通过统一入口共享，无需创建管理器实例。 */
     private ThemeManager() {
     }
 

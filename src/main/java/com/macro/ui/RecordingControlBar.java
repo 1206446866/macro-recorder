@@ -7,8 +7,12 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import java.awt.*;
 
-/** 紧凑录制的双行布局；右侧控件按首选宽度固定，目标文本只使用剩余空间。 */
+/**
+ * 组织紧凑录制操作栏的双行内容，控件状态和按钮回调由主窗口管理。
+ * 第一行显示程序与录制状态，第二行显示目标窗口和操作按钮；目标文本只使用按钮之外的剩余宽度。
+ */
 final class RecordingControlBar extends JPanel {
+    /** 使用主窗口已有的标签和按钮组装布局，不创建另一套录制状态或事件回调。 */
     RecordingControlBar(JLabel name, JLabel status, JLabel count, JLabel target,
                         JButton minimize, JButton capture, JButton pause, JButton stop) {
         super(new BorderLayout(0, 10));
@@ -48,22 +52,26 @@ final class RecordingControlBar extends JPanel {
         add(details, BorderLayout.CENTER);
     }
 
+    /** 返回布局首选尺寸，并为两行控件预留至少 640 个逻辑像素的宽度。 */
     @Override
     public Dimension getPreferredSize() {
         Dimension size = super.getPreferredSize();
         return new Dimension(Math.max(640, size.width), size.height);
     }
 
+    /** 生成单行目标说明；未指定窗口时说明全局录制，字段缺失时使用对应提示。 */
     static String targetText(TargetWindow target) {
         if (target == null) return "全局录制 · 未指定目标窗口";
         return available(target.getProcessName(), "进程名暂不可用") + " · "
                 + available(target.getWindowTitle(), "窗口标题暂不可用");
     }
 
+    /** 将空白字段替换为提示，并去除换行，避免窗口标题破坏单行显示。 */
     private static String available(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value.replace('\r', ' ').replace('\n', ' ');
     }
 
+    /** 创建使用指定布局的透明容器，让操作栏背景连续铺满。 */
     private static JPanel transparent(LayoutManager layout) {
         JPanel panel = new JPanel(layout);
         panel.setOpaque(false);

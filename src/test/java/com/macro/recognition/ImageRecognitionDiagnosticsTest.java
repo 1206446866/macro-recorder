@@ -71,11 +71,10 @@ public final class ImageRecognitionDiagnosticsTest {
             ImageIO.write(template, "png", templateFile.toFile());
             MacroNode node = new MacroNode("diagnostic-image-node", NodeType.IMAGE_CHECK,
                     null, new ImageCheckConfig("template.png", 0.99), new ArrayList<>());
-            OpenCvImageMatcher matcher = new OpenCvImageMatcher(() -> directory.toFile());
+            OpenCvImageMatcher matcher = new OpenCvImageMatcher(directory::toFile);
 
             // 同一份屏幕和模板先经过测试窗口使用的服务，再经过播放匹配器。
-            var testReport = service.recognize(List.of(snapshot), template, 0.99,
-                    ScreenRecognitionService.RecognitionEngine.OPEN_CV);
+            var testReport = service.recognize(List.of(snapshot), template, 0.99);
             check(!testReport.matches().isEmpty(), "测试服务未命中受控模板：" + testReport.bestCandidate());
             ImageMatchResult visible = matcher.match(node, new FlowContext());
             check(visible.isFound(), "实际播放匹配器未命中可见模板");

@@ -1,14 +1,24 @@
 package com.macro.flow;
 
+import lombok.Getter;
+
 import java.awt.Rectangle;
 
 /** 图像匹配扩展点返回的状态与匹配区域。 */
 public final class ImageMatchResult {
 
-    /** 是否达到阈值的匹配状态。 */
+    /** 是否达到阈值的匹配状态。
+     * -- GETTER --
+     * 返回达到阈值后的匹配状态。
+     */
+    @Getter
     private final ImageMatchStatus status;
 
-    /** 最佳候选相似度，取值范围为 0 到 1。 */
+    /** 最佳候选相似度，取值范围为 0 到 1。
+     * -- GETTER --
+     * 返回最佳候选相似度。
+     */
+    @Getter
     private final double similarity;
 
     /** 命中区域的屏幕逻辑坐标；未命中时为空。 */
@@ -66,19 +76,9 @@ public final class ImageMatchResult {
         );
     }
 
-    /** 返回达到阈值后的匹配状态。 */
-    public ImageMatchStatus getStatus() {
-        return status;
-    }
-
     /** 判断匹配结果是否达到阈值。 */
     public boolean isFound() {
         return status == ImageMatchStatus.FOUND;
-    }
-
-    /** 返回最佳候选相似度。 */
-    public double getSimilarity() {
-        return similarity;
     }
 
     /** 返回命中区域副本，防止调用方修改内部坐标。 */

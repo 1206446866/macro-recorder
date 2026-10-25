@@ -19,9 +19,11 @@ public final class ImageTransferUtil {
     private static final int MAX_IMAGE_BYTES = 20 * 1024 * 1024;
     private static final int MAX_TEXT_LENGTH = 1024 * 1024;
 
+    /** 图片传输格式解析通过静态方法提供，无需创建实例。 */
     private ImageTransferUtil() {
     }
 
+    /** 判断传输格式是否可能携带图片地址，不在此处访问网络或读取图片。 */
     public static boolean supportsAddress(DataFlavor flavor) {
         return flavor.isFlavorTextType() || "text".equalsIgnoreCase(flavor.getPrimaryType())
                 || flavor.getRepresentationClass() == URL.class;
@@ -58,6 +60,7 @@ public final class ImageTransferUtil {
                     if (html) {
                         String[] src = new String[1];
                         new ParserDelegator().parse(new StringReader(text), new HTMLEditorKit.ParserCallback() {
+                            /** 从 HTML 的首个图片标签提取来源地址，忽略后续重复图片。 */
                             @Override
                             public void handleSimpleTag(HTML.Tag tag, MutableAttributeSet attrs, int pos) {
                                 if (tag == HTML.Tag.IMG && src[0] == null) {
@@ -82,6 +85,7 @@ public final class ImageTransferUtil {
         return null;
     }
 
+    /** 判断文本是否使用受识别的图片地址协议，供传输内容解析使用。 */
     private static boolean isImageAddress(String text) {
         return text.startsWith("https://") || text.startsWith("http://")
                 || text.startsWith("file:/") || text.startsWith("data:image/")

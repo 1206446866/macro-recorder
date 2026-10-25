@@ -4,6 +4,7 @@ import com.sun.jna.*;
 import com.sun.jna.platform.win32.WinDef.HWND;
 import com.sun.jna.win32.StdCallLibrary;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.condition.EnabledOnOs;
 import org.junit.jupiter.api.condition.OS;
 import javax.swing.*;
@@ -35,9 +36,9 @@ class ScreenCaptureControllerTest {
                 frame.setBounds(-12000, -12000, 300, 120); frame.setVisible(true);
                 ScreenCaptureController controller = new ScreenCaptureController(frame,
                         image -> callbacks.incrementAndGet(), callbacks::incrementAndGet,
-                        error -> fail(error), true, (device, bounds) -> {
+                        Assertions::fail, true, (device, bounds) -> {
                             workerWasEdt.set(SwingUtilities.isEventDispatchThread()); entered.countDown();
-                            release.await(3, TimeUnit.SECONDS);
+                            assertTrue(release.await(3, TimeUnit.SECONDS), "测试未及时释放截图任务");
                             return new BaseMultiResolutionImage(new BufferedImage(10, 10, BufferedImage.TYPE_INT_RGB));
                         });
                 control.set(controller); controller.startCapture();
@@ -103,7 +104,7 @@ class ScreenCaptureControllerTest {
                     assertEquals(1, cloak(frame) & 1);
                 }
                 assertEquals(0, cloak(frame) & 1);
-                ScreenCaptureController normal = new ScreenCaptureController(frame, image -> fail(), () -> { }, error -> fail(error),
+                ScreenCaptureController normal = new ScreenCaptureController(frame, image -> fail(), () -> { }, Assertions::fail,
                         false, (device, bounds) -> { throw new AssertionError("取消后不应采集"); });
                 normal.startCapture();
                 assertNotNull(field(normal, "captureTimer"));
@@ -121,8 +122,8 @@ class ScreenCaptureControllerTest {
             SwingUtilities.invokeAndWait(() -> {
                 JFrame frame = new JFrame(); owner.set(frame);
                 frame.setAutoRequestFocus(false); frame.setBounds(-12000, -12000, 300, 120); frame.setVisible(true);
-                ScreenCaptureController controller = new ScreenCaptureController(frame, image -> { }, () -> { }, error -> fail(error), true,
-                        (device, bounds) -> { entered.countDown(); release.await(3, TimeUnit.SECONDS);
+                ScreenCaptureController controller = new ScreenCaptureController(frame, image -> { }, () -> { }, Assertions::fail, true,
+                        (device, bounds) -> { entered.countDown(); assertTrue(release.await(3, TimeUnit.SECONDS), "测试未及时释放截图任务");
                             return new BaseMultiResolutionImage(new BufferedImage(60, 40, BufferedImage.TYPE_INT_RGB)); });
                 control.set(controller); controller.startCapture();
             });

@@ -69,6 +69,7 @@ public class WindowSelector implements NativeMouseInputListener {
         running = false;
     }
 
+    /** 查询鼠标所在窗口，并将结果交给界面更新候选窗口信息。 */
     @Override
     public void nativeMouseMoved(NativeMouseEvent e) {
         WindowInfo windowInfo = WindowsWindowUtil.getWindowInfo(
@@ -81,6 +82,7 @@ public class WindowSelector implements NativeMouseInputListener {
         }
     }
 
+    /** 仅用鼠标左键确认有效窗口，停止选择监听后回传最终选择结果。 */
     @Override
     public void nativeMousePressed(NativeMouseEvent e) {
         if (e.getButton() != NativeMouseEvent.BUTTON1) {
@@ -109,6 +111,7 @@ public class WindowSelector implements NativeMouseInputListener {
         }
     }
 
+    /** 窗口选择在按下时完成，此处无需处理释放事件。 */
     @Override
     public void nativeMouseReleased(NativeMouseEvent e) {
     }

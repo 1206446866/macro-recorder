@@ -2,7 +2,225 @@
 
 本文最初记录 TEST-01：让已有独立检查由 Maven 实际执行；该次接入未修改生产业务逻辑。后续新增覆盖、夹具调整和真实结果按轮次保留在下文，不能把历史测试数量当作当前总数。当前项目概况见 [文档索引](README.md)。
 
-1.0.0 正式版收尾已在统一版本后重新验证：2026-10-21 定向 51 项、完整 69 项，失败/错误/跳过均为 0、退出码 0，mvn compile 退出码 0。完成时间、完整命令、日志及本地提交范围见 [正式版收尾记录](release-1.0.0.md)。下文各轮历史结果保留，不以它们代替本次运行。
+## 2026-10-25：1.1.0 提交前复核
+
+在维护者将 `ApplicationInfo.APP_VERSION` 设为 1.1.0 后，Maven 数字版本已同步。提交前重新核对累计源码、测试、删除项和新增文件；当前 README 同步版本依据及识别入口说明，更新日志按 `1.1.0（待发布）` 归组。1.0.0 已提交的分支跳转、保存校验及侧键保护不重复计为本轮新增功能。
+
+- 定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=MainTitleBarTest,SideMouseButtonEditorTest,ImageJumpEditorTest,ImageRecognitionFrameTest,RecognitionWindowVisibilityTest,ScreenCaptureControllerTest,LegacyRegressionTest#popupTitleBarContract+mainTitleBarContract+recordingTitleBarContract+recordingBarNativeResize+modelessActionEditor+aboutSettings+shortcutsSettings+standbyHeadSettings+numericInputValidation' test`：26 项，失败 0、错误 0、跳过 0，退出码 0，15:52:08 完成。
+- 完整执行 `mvn '-Dsurefire.timeout=180' test`：114 项，失败 0、错误 0、跳过 0，退出码 0，15:55:11 完成。
+- 执行 `mvn compile`：退出码 0，15:58:51 完成；生产类已在上述测试运行中重新编译。
+
+日志位于 `target/push-1.1.0-20261025/` 的 `directed.log`、`full-test.log`、`compile.log`。没有执行 `mvn clean`，没有重新运行 Qodana；测试使用既有隔离及模拟机制，真实 Windows 11、150% DPI 的窗口/截图行为仍按各功能人工清单验收。提交和远程同步结果以实际 Git 记录为准，不将推送等同于打包发布。
+
+## 2026-10-25：统一应用弹窗标题栏
+
+`MainTitleBar` 复用到设置、动作编辑、图像识别测试及消息/确认弹窗，统一字体、分隔线和按钮反馈；对话框仅显示关闭，独立识别窗口保留最小化、最大化/还原和关闭。`WindowTitleBarSupport` 管理弹窗的安装与卸载；既有 DWM 适配层扩展为处理 JFrame/JDialog，仍保存和转发各自原 AWT 过程。模态、编辑器编号和替换规则、识别取消/窗口恢复沿用原流程。提示窗改用 DWM 外框及不透明主题底板，移除旧正文关闭按钮和旧外层透明圆角，避免重复按钮和浅色边角。全屏截图框选层及 Windows 原生文件面板不加标题栏。
+
+新增 `MainTitleBarTest` 的对话框检查，验证只有关闭、关闭事件和标题更新不改变模态；新增隔离 `PopupTitleBarContractTest`，验证四类真实 HWND 的标题栏、按钮数量/右对齐、系统按钮隐藏、原生拖动及按钮命中、回调安装和销毁卸载，以及关闭不保存编辑/设置、不返回确认、默认确认仍返回确认、识别关闭进入原取消清理。导出 `target/dialog-titlebars-20261025/*-preview.png`，已核对实际组件的 150% 离屏预览；不是桌面截图。
+
+最终定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=MainTitleBarTest,SideMouseButtonEditorTest,ImageJumpEditorTest,ImageRecognitionFrameTest,RecognitionWindowVisibilityTest,ScreenCaptureControllerTest,LegacyRegressionTest#popupTitleBarContract+mainTitleBarContract+recordingTitleBarContract+recordingBarNativeResize+modelessActionEditor+aboutSettings+shortcutsSettings+standbyHeadSettings+numericInputValidation' test`：26 项，失败 0、错误 0、跳过 0，退出码 0，14:27:28 完成，日志 `directed-release.log`。前两次定向因新增测试入口的符号/导入遗漏而编译失败，未执行测试；修正后第一轮 26 项通过。随后在预览中发现提示窗旧底板浅色边角，修正底板并补充原生命中及默认确认检查，再得到最终上述结果；相关日志均保留。
+
+完整执行 `mvn '-Dsurefire.timeout=180' test`：114 项，失败 0、错误 0、跳过 0，退出码 0，14:29:36 完成，日志 `full-test.log`。初次生产编译成功；最终编译记录见同目录 `compile.log`。没有执行 `mvn clean`，不删除已有诊断产物，未提交或推送。
+
+Windows 11、150% DPI 仍需人工确认四类弹窗的顶部、悬停、拖动和关闭命中，设置/Esc 取消与保存、编辑器替换及编号、提示窗确认/取消及 Alt+F4，识别窗口最大化/还原、最小化恢复，以及截图/识别采集时隐藏和取消后的恢复。隐藏 HWND、合成消息和离屏预览不等于真实桌面行为已经验收；最大化悬停贴靠菜单仍沿用主页标题栏的既有限制。
+
+## 2026-10-25：清理无调用方法
+
+以当前源码为准，使用 JDK 17 语义分析遍历 146 个源码文件、943 个生产方法，解析重载调用及方法引用；结合文本检索复核反射、资源和原生调用。旧 IDEA 报告仅作为线索：当前已有调用的确认弹窗和主题切换方法均保留，不将旧报告的“未使用”结论直接用于删除。
+
+删除 `AppConfig` 的四个无调用单项 setter 和旧八参数 `updateSettings` 重载；删除 `MacroRecorder.start()` 无参转发入口；删除无调用的 `TodoUtil.show()` 及仅承载此入口的工具类；移除 `WindowsRecordingTitleBar` 无人读取的高度字段、生成 getter 及对应赋值，共 8 个闲置方法。保留设置统一保存入口、旧配置键读取、`start(TargetWindow)` 和所有原生消息行为。未调整 MR 格式或运行逻辑，也未删除测试。
+
+删除后再次语义分析：145 个源码文件、936 个显式生产方法，编译分析错误 0，同类无引用方法候选为空。数据、序列化、继承契约、原生映射及生成的方法不因普通文本调用少而删除；这不是重新执行全项目 IDEA 检查或对动态使用的全面证明。临时工具与前后分析结果均位于忽略目录 `target/unused-methods-20261025/`。
+
+- 定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=RecordingTitleBarRefreshTest,PlaybackThemeTest,LegacyRegressionTest#configurationWriteSafety+configurationParseSafety+standbyHeadSettings+recordingPause+recordingMouseCoordinates+recordingTitleBarContract+recordingBarNativeResize+mainTitleBarContract' test`：15 项，失败 0、错误 0、跳过 0，退出码 0，13:00:48 完成，日志 `directed.log`。
+- 完整执行 `mvn '-Dsurefire.timeout=180' test`：112 项，失败 0、错误 0、跳过 0，退出码 0，13:02:23 完成，日志 `full-test.log`。
+- 执行 `mvn compile`：退出码 0，日志 `compile.log`；生产类已在定向测试时重新编译。
+
+本轮未增加新的行为，不为删除方法编写仅断言“方法不存在”的测试；沿用现有配置安全、录制及窗口生命周期回归。未进行真实桌面验收，未执行 `mvn clean`，未提交、未推送；保留其他已有修改和诊断产物。
+
+## 2026-10-25：主页自绘标题栏
+
+新增 `MainTitleBar`，使用现有主题绘制标题与最小化、最大化/还原、关闭按钮；窗口操作复用 `WindowManager` 和原有关闭事件。普通主页复用 DWM 适配层，保留原 AWT 过程及双向缩放；进入紧凑录制时先卸载主页实例，停止后恢复。业务内容面板、窗口句柄及紧凑栏尺寸、置顶、位置记忆不变。
+
+新增 `MainTitleBarTest` 2 项，验证按钮状态/回调、长标题在窄宽布局中的按钮固定位置及主题悬停色；离屏预览位于 `target/main-titlebar-20261025/preview.png`。新增隔离的 `MainTitleBarContractTest`，验证真实 HWND 的样式、顶部/按钮命中、主页不受固定高度约束、两轮模式切换中回调不叠加和窗口销毁卸载。既有 `RecordingBarNativeResizeTest` 的观察层改为直接接原 AWT 过程，动态布局继续开启，原转发及尺寸断言保留。
+
+定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=MainTitleBarTest,RecordingTitleBarRefreshTest,RecordingControlBarLayoutTest,RecordingBarGeometryTest,LegacyRegressionTest#mainTitleBarContract+recordingTitleBarContract+recordingBarNativeResize+playbackWindowRestore+playbackTimelineWindow+modelessActionEditor' test`：18 项，失败 0、错误 0、跳过 0，退出码 0，12:51:24 完成，日志 `target/main-titlebar-20261025/directed-final.log`。
+
+首轮定向 18 项中有 2 项失败：合成 `WM_GETMINMAXINFO` 没有提供 Windows 通常预填的系统跟踪上限；原缩放夹具的观察回调先装在主页回调之上，导致生产逻辑正确拒绝越过其他回调卸载。补齐消息输入和观察层安装顺序后，先单独重跑这两项通过，再完成上述定向验证；原日志 `directed.log`、复核日志 `contracts-verified.log` 保留，没有修改断言来忽略失败。
+
+完整执行 `mvn '-Dsurefire.timeout=180' test`：112 项，失败 0、错误 0、跳过 0，退出码 0，12:53:08 完成；`mvn compile` 退出码 0，12:53:31 完成。日志为 `target/main-titlebar-20261025/full-test.log`、`compile.log`；没有执行 `mvn clean`。
+
+测试使用隐藏窗口、合成原生消息及离屏绘制，按钮状态测试使用模拟扩展状态，不等同于真实 Windows 桌面验收。Windows 11、150% DPI 仍需人工检查：按钮点击/悬停、拖动/双击最大化、四边四角缩放、最大化工作区与还原位置、任务栏最小化恢复；录制栏切换/置顶、停止恢复、播放自动最小化及 F12 恢复、截图隐藏和取消恢复。Windows 11 最大化按钮悬停的贴靠菜单尚未单独接入；现有自绘按钮返回客户区命中，不宣称实现了微软要求的 [HTMAXBUTTON 悬停协议](https://learn.microsoft.com/windows/apps/desktop/modernize/apply-snap-layout-menu)。未提交、未推送。
+
+## 2026-10-25：卡片蓝青渐变与主题配色补齐
+
+已播放节点及头部待机卡使用蓝到青的对角渐变，叠加柔和内边缘；当前播放边框仍使用强调色，未执行节点不点亮。不改变组件、尺寸、文字布局、播放语义或进度刷新时机，不增加动画任务。`ThemePalette` 增加播放渐变两端、强调底色文字、普通悬停、高光和阴影六个角色，默认值集中在 `DarkTheme`。
+
+核对主源码中的固定颜色后，将主窗口、窗口选择页、动作编辑/设置按钮、提示窗、输入选中文字和勾选图标纳入对应主题角色。时间线临时输入框也明确绑定选中背景与文字，普通输入框补齐禁用文字色。保留提示窗 `new Color(0, 0, 0, 0)` 的纯透明背景；其余 `new Color` 均用于已有主题色/组件前景色的透明度或混色，不是独立固定 RGB。沿用现有创建窗口前应用调色板的机制，本轮没有实现实时切换整套窗口。
+
+新增 `PlaybackThemeTest` 3 项：用反差明显的自定义调色板确认文字选择、按钮、勾选图标及渐变两端读取主题；验证内光不溢出、当前边框保留、未执行不点亮；实际卡片的后代组件位置、首选尺寸、字体与文字颜色保持不变。导出 `target/playback-gradient-20261025/preview.png` 并核对四种播放状态；它来自实际组件的离屏绘制，不是桌面截图。
+
+定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=PlaybackThemeTest,TimelinePlaybackProgressTest,TimelineNumberingTest,TimelineJumpLayoutTest,DarkComboBoxStyleTest,StandbyHeadTimelineTest,ImageJumpEditorTest,ImageRecognitionFrameTest,LegacyRegressionTest#aboutSettings+shortcutsSettings+numericInputValidation+timelineHeadlessEditing+timelinePlaybackProtection+modelessActionEditor+recordingTitleBarContract' test`：35 项，失败 0、错误 0、跳过 0，退出码 0，12:31:44 完成；日志 `target/playback-gradient-20261025/directed.log`。
+
+随后完整执行 `mvn '-Dsurefire.timeout=180' test`：109 项，失败 0、错误 0、跳过 0，退出码 0，12:33:07 完成；`mvn compile` 构建成功，退出码 0。日志为 `target/playback-gradient-20261025/full-test.log`、`compile.log`。
+
+Windows 11、150% DPI 仍需人工确认渐变柔和程度，卡片文字/参数、选中态和当前播放边框的辨识度，输入选中文字及按钮/勾选图标是否清晰；自动绘制不等于原生桌面验收。未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-25：设置「关于」页
+
+设置侧栏新增独立「关于」页，沿用现有深色卡片和导航图标绘制，展示 `ApplicationInfo.APP_NAME`、`APP_VERSION`、软件用途及 Windows 平台说明；没有作者、许可证等未经确认的信息，也不新增配置项或修改保存流程。
+
+新增隔离入口 `LegacyRegressionTest#aboutSettings`，只构造隐藏窗口，验证侧栏选中态、软件常量、只读主题、820/920 两种宽度下文字与导航不裁切、实际离屏绘制、从长快捷键页切回后恢复高度，以及浏览/取消后配置字节不变。原快捷键检查同步为六个分类，其他断言保留。
+
+执行 `mvn '-Dsurefire.timeout=180' '-Dtest=LegacyRegressionTest#aboutSettings+shortcutsSettings+standbyHeadSettings' test`：3 项，失败 0、错误 0、跳过 0，退出码 0，12:20:55 完成；日志 `target/settings-about-20261025/directed-verified.log`。首轮 3 项中关于页失败 1 项；单独复核确认 BoxLayout 把版本文字宽度取整为 60、所需宽度为 61。将本页说明标签设为可填满卡片宽度，保持原断言后得到最终通过结果；初次及诊断日志 `directed.log`、`layout-check.log` 保留。
+
+随后完整执行 `mvn '-Dsurefire.timeout=180' test`：106 项，失败 0、错误 0、跳过 0，退出码 0，12:22:26 完成；`mvn compile` 成功，退出码 0。日志为 `target/settings-about-20261025/full-test.log`、`compile.log`。
+
+Windows 11、150% DPI 仍需人工确认「关于」入口、图标和文字显示，窗口缩放、切页及取消正常。隐藏窗口测试不代表真实桌面验收；未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-25：全项目 IDEA 警告检查与处理
+
+使用本机 IntelliJ IDEA 2026.2.3（IU-262.10968.63）的离线检查入口，读取现有 `Project Default` 配置，对当前 82 个生产源文件、59 个测试源文件及 pom.xml 执行检查。源码副本、独立配置/缓存、报告均位于 `target/idea-project-audit-20261025/`，Java 17 与依赖按 Maven 类路径配置，不改原项目 IDEA 检查规则。首次启动在沙箱中因本地回环连接被拒绝，放行该离线入口后检查成功；未运行 Qodana 或上传报告。
+
+| 检查等级 | 修改前 | 修改后 |
+| --- | --- | --- |
+| 错误 | 1 | 0 |
+| 警告 | 163 | 120 |
+| 弱警告 | 35 | 33 |
+| 拼写提示 | 70 | 70 |
+| 调试建议 | 67 | 67 |
+
+两次 IDEA 检查均退出码 0。原始 XML 位于 `results-before/`、`results-after/`，机器可读汇总为 `findings-before.json`、`findings-after.json`。检查结果依赖 IDE 版本、插件和推断状态，不是对实时「问题」面板每一项提示的清零承诺。
+
+实际修改包括：删除恒定条件、未使用导入和冗余转换；合并按键名称的等价分支；保持 JNA 字段可写而改用现有 DWORD 实例设置长度；局部化仅供构造使用的私有字段；默认目录创建失败留下警告日志并允许继续选择其他目录；清理失败改用 JDK 日志并保留异常堆栈；测试补充非空与等待超时断言。没有删除 JNA 字段、变更原生窗口消息处理或改写播放流程。
+
+IDEA 还发现 Jackson 2.22.3 的 CVE-2026-110879。核对 [FasterXML 官方公告](https://github.com/FasterXML/jackson-databind/security/advisories/GHSA-m8xf-2cr7-77ph) 后，更新为同系列补丁版 2.22.4；实际解析的 jackson-databind、jackson-core 均为 2.22.4。MR 字段、格式版本和 ObjectMapper 配置未改；这条依赖告警不代表已经证明本应用可被利用。
+
+保留项：JNA/COM 字段及原生返回值通过映射使用，不能按「未使用」删除；配置、序列化和扩展入口不因当前调用次数少而移除；明确命名的布尔查询及原生函数不为消除反向调用建议而改名；测试轮询、进程等待、失败堆栈和反射属于夹具用途。record/getter、重复片段、提取方法、固定实参等建议未据此扩大重构；HTTP 字符串用于识别用户已有链接，专业术语不是拼写错误。仍有 4 条测试取值的保守空值提示及其他风格提示，不声称所有警告已修复。
+
+实际验证：
+
+- 定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=MacroStorageSaveValidationTest,StandbyHeadStorageTest,ImageJumpPlaybackTest,ImageJumpEditorTest,SideMouseButtonSafetyTest,SideMouseButtonEditorTest,RecordingBarGeometryTest,PlaybackProgressBufferTest,StandbyHeadTimelineTest,TimelinePlaybackProgressTest,TimelineJumpLayoutTest,ScreenCaptureControllerTest,ScreenRecognitionServiceTest,ImageRecognitionFrameTest,LegacyRegressionTest#timelinePlaybackProtection+timelineLivePlaybackProtection+recordingMouseCoordinates+recordingPause+macroStorageFailure+imageCheckBehaviors+flowPreflightValidation+recordingBarNativeResize+recordingTitleBarContract+modelessActionEditor+numericInputValidation' test`：67 项，失败 0、错误 0、跳过 0，退出码 0，03:40:42 完成；日志 `directed-verified.log`。
+- 完整执行 `mvn '-Dsurefire.timeout=180' test`：105 项，失败 0、错误 0、跳过 0，退出码 0，03:42:48 完成；日志 `full-test.log`。
+- 随后执行 `mvn compile`：构建成功，退出码 0；日志 `compile.log`，生产类已在定向运行中重新编译。
+
+上述日志均在 `target/idea-project-audit-20261025/`。首轮定向因测试内原生偏移量误用了 long 而编译失败，退出码 1、未执行测试；修正后得到上述最终结果，保留 `directed.log`。不将编译失败或仅参与编译的人工诊断入口计为测试通过。本轮没有运行 `mvn clean`、提交或推送，也没有把自动回归当作真实 Windows 11、150% DPI 桌面验收。
+
+## 2026-10-25：时间线 IDEA 警告与文档清理
+
+根据用户提供的 IDEA 提示，仅调整 `ActionTimelinePanel`：将待机开关的当前状态单独命名；把总被取反调用的行内编辑检查改为直接表达阻止条件；字体标签辅助方法只接收是否加粗，内部使用 `Font.BOLD` / `Font.PLAIN` 常量，不增加注解依赖或屏蔽检查。保留原有校验、副作用顺序、字号和字重。
+
+执行 `mvn '-Dsurefire.timeout=180' '-Dtest=StandbyHeadTimelineTest,TimelineNumberingTest,TimelineJumpLayoutTest,TimelinePlaybackProgressTest,LegacyRegressionTest#timelineHeadlessEditing+timelinePlaybackProtection+numericInputValidation' test`：**21 项，失败 0、错误 0、跳过 0，退出码 0**，03:28:58 完成；日志 `target/idea-warnings-20261025-directed.log`。覆盖待机开关及延迟编辑、坐标和普通延迟编辑、无效文本与编辑权限、编号布局、分支连线及播放标记。定向运行实际重新编译了 82 个生产源文件和 59 个测试源文件。
+
+随后执行 `mvn compile`：构建成功，退出码 0；日志 `target/idea-warnings-20261025-compile.log`。生产类已在上述定向运行中重新编译，此次确认是最新。
+
+按用户要求删除两份过时的 10 月 19 日审查报告；其历史内容可从 Git 查看。保留功能规则、测试历史和正式版记录，并修正文档入口、当前 Git 状态、识别阈值范围及编辑器非模态说明。没有重新运行完整测试、Qodana 或 IDEA 全项目离线检查；未直接读取 IDEA 的实时问题面板，不能据此声称全部 IDE 警告已清零。没有执行 `mvn clean`、提交或推送。
+
+## 2026-10-24：非模态动作编辑与当前模板识别
+
+动作编辑/插入窗口改为非模态；主窗口跟踪单个编辑器，后开窗口直接替换旧窗口并沿用位置，不询问旧修改。旧窗口释放后保存/删除入口失效，迟到的关闭通知不能清除新窗口；播放/录制锁定时仍关闭编辑器。右上角复用 `TimelineNodeNumbers` 显示节点编号，插入/删除后更新；目标被删或换宏时关闭过期编辑器，编号不写入节点 ID。
+
+主页移除识别按钮，图像动作模板旁新增「识别」，使用当前模板及阈值准备预览，打开预览不自动截图、不保存宏。相对模板路径仍复用 MR 目录解析；识别窗口阈值范围与动作编辑器一致为 1%～100%。关闭/替换编辑器或切换动作类型时同时释放识别窗口。
+
+识别采集改为自动遮蔽并隐藏所有本程序可见窗口，先记录窗口列表，再隐藏，避免父窗口连带隐藏子窗口导致遗漏。复用 `WindowsCaptureSupport` 的 DWM 遮蔽/恢复与后台同步，保留既有 180ms 非阻塞准备定时器；采集完成后恢复原可见窗口和扩展状态，匹配继续在后台运行。原来隐藏、已经销毁的窗口不主动显示；取消或释放时同步清理，旧 worker/迟到定时器不再恢复已关闭窗口。DWM 同步不代表桌面合成已完成，实际无残影仍需人工确认。
+
+新增隔离入口 `LegacyRegressionTest#modelessActionEditor`（运行 `ModelessActionEditorTest`）检查非模态、替换/旧回调、动态编号、删目标/换宏/锁定后的关闭、主页入口移除、模板和阈值预载、预览复用及释放；配置与合成模板均在 `target/test-sandboxes/`。新增 `RecognitionWindowVisibilityTest` 2 项，使用真实隐藏句柄和模拟可见状态检查父子窗口完整快照、原隐藏窗口保持隐藏、扩展状态恢复、幂等恢复、已销毁编辑器不重开及关闭后的迟到事件。没有真实显示窗口、截图或发送输入；无桌面时相关入口明确跳过。
+
+实际命令与结果：
+
+- `mvn '-Dsurefire.timeout=180' '-Dtest=RecognitionWindowVisibilityTest,ImageRecognitionFrameTest,ImageJumpEditorTest,ImageCheckEditorTest,NumericEditorIntegrationTest,ScreenRecognitionServiceTest,TimelineNumberingTest,LegacyRegressionTest#modelessActionEditor+timelineLivePlaybackProtection+templatePathPlaybackAndEditor+recordingTitleBarContract' test`：18 项，失败 0、错误 0、跳过 0，退出码 0，23:42:55 完成；日志 `target/modeless-editor-directed-verified.log`。其中 `ImageCheckEditorTest`、`NumericEditorIntegrationTest` 是旧式 main，未因该选择器单独执行；实际 18 项来自其余 JUnit 入口。
+- `mvn '-Dsurefire.timeout=180' test`：105 项，失败 0、错误 0、跳过 0，退出码 0，23:44:36 完成；日志 `target/modeless-editor-full-test.log`。
+- `mvn compile`：退出码 0，23:45:23 完成；日志 `target/modeless-editor-compile.log`。此前初次编译也成功，日志 `target/modeless-editor-initial-compile.log`；最终生产类已在定向测试中重新编译。
+
+首轮定向 18 项中 3 项失败：模拟窗口未创建实际句柄，JNA 无法取得绘图表面；预览复用断言也发生在创建句柄之前。夹具改为仅创建隐藏句柄、保持不显示，保留原断言目标后执行上述最终验证。初次日志 `target/modeless-editor-directed.log` 保留。
+
+Windows 11、150% DPI 人工验收：编辑时主界面可操作，连续打开动作直接替换且无提示；右上角编号随时间线变化；模板旁入口位置及当前图片/阈值载入；识别画面不含主窗口、编辑器、识别窗口或残影；完成、失败、关闭期间窗口正确恢复；不抢录制/播放输入焦点，录制/播放启动仍锁住编辑。未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-24：移除 Java 识别，仅保留 OpenCV
+
+删除 `TemplateMatcher`、`TemplateMatcherFallbackTest` 及其标准入口 `LegacyRegressionTest#javaFallbackResults`。`ScreenRecognitionService` 移除引擎参数、枚举及报告中的引擎字段，仅使用已有 OpenCV 匹配；播放匹配器与诊断检查同步调用新入口。MR 配置、模板路径、阈值与分支语义不变。识别测试窗口只保留「识别当前屏幕」按钮，移除结果中的引擎信息，保留匹配位置、内存统计和原有隐藏/恢复流程。
+
+新增 `ScreenRecognitionServiceTest` 4 项：以真实 OpenCV 和合成画面检查跨屏匹配、150% 坐标换算和负坐标、阈值及最佳候选、空屏幕列表、跨屏结果上限和中断取消。新增 `ImageRecognitionFrameTest` 2 项：隐藏窗口检查单一识别按钮、缺少模板/忙碌/清空状态、命中与未命中报告以及重置后没有引擎显示。没有采集真实桌面或发送输入；隐藏窗口检查无桌面时明确跳过。
+
+本轮由 97 项减去 Java 实现专属的 1 项、增加 6 项，完整执行 102 项。实际命令与结果：
+
+- `mvn '-Dsurefire.timeout=180' '-Dtest=ScreenRecognitionServiceTest,ImageRecognitionFrameTest,LegacyRegressionTest#openCvPerfectThreshold+imageCheckBehaviors+flowPreflightValidation+templatePathPlaybackAndEditor' test`：10 项，失败 0、错误 0、跳过 0，退出码 0，23:20:37 完成；日志 `target/opencv-only-directed.log`。
+- `mvn '-Dsurefire.timeout=180' test`：102 项，失败 0、错误 0、跳过 0，退出码 0，23:22:15 完成；日志 `target/opencv-only-full-test.log`。
+- `mvn compile`：退出码 0，23:22:46 完成；日志 `target/opencv-only-compile.log`。生产类已在定向测试中重新编译。
+
+`ImageRecognitionDiagnosticsTest` 的实际桌面截图入口仅同步 API 并参与编译，本轮没有运行该人工诊断入口。Windows 11、150% DPI 仍需人工检查单一按钮的布局、实际识别及阈值、多结果切换、识别时隐藏应用窗口和完成/异常/关闭恢复。历史 Java 回退测试记录保留，仅代表删除前的历史结果。本轮未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-24：设置中的只读快捷键页
+
+设置侧栏新增「快捷键」，只显示现有按键、作用和生效条件，不注册新快捷键、不增加配置键、不提供改绑控件。复用现有深色卡片；滚动高度按当前页面计算，避免长列表拉长其他设置页。
+
+新增隔离入口 `LegacyRegressionTest#shortcutsSettings`，运行隐藏的 `ShortcutsSettingsTest`：检查独立导航、F10/F11/F12、Delete、Enter/Esc、Alt+F4、Ctrl+V 及各自场景，页面不含可编辑控件；在 820/920 两种窗口宽度下检查说明完整、纵向滚动及离屏绘制；切回原页面恢复滚动高度和顶部；查看与取消后配置字节保持不变。配置仅写入本轮 `target/test-sandboxes/` 副本，不注册 Hook、不发送输入、不读写剪贴板。
+
+实际命令与结果：
+
+- `mvn '-Dsurefire.timeout=180' '-Dtest=LegacyRegressionTest#shortcutsSettings+standbyHeadSettings+pauseHotkeyRepeat+recordingPause+timelineHeadlessEditing+recordingControlInputFilter' test`：6 项，失败 0、错误 0、跳过 0，退出码 0，23:09:12 完成；日志 `target/shortcuts-settings-directed-verified.log`。
+- `mvn '-Dsurefire.timeout=180' test`：97 项，失败 0、错误 0、跳过 0，退出码 0，23:10:39 完成；日志 `target/shortcuts-settings-full-test.log`。
+- `mvn compile`：退出码 0，23:10:50 完成；日志 `target/shortcuts-settings-compile.log`。生产类在定向测试时已重新编译，本次 compile 确认是最新。
+
+最初定向 6 项中新增布局检查失败 1 项，复核时单独执行仍失败；说明标签在 BoxLayout 下宽度不足。改为填满说明区域的双行布局后，执行上述最终定向及完整验证。初次日志 `target/shortcuts-settings-directed.log`、`target/shortcuts-settings-layout-check.log` 保留。
+
+隐藏窗口与离屏绘制不等同于真实桌面验收；Windows 11、150% DPI 仍需确认侧栏入口、按键说明的清晰度、列表滚动、切页及只读观感。未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-24：暂停查看时间线与实际执行标记
+
+本轮在 86 项基础上增加 10 个标准入口，最终完整执行 96 项。新增 `PlaybackProgressBufferTest` 3 项和 `TimelinePlaybackProgressTest` 5 项，检查大量重复进度仅安排一次待处理 EDT 刷新、按节点去重保留完成身份、每轮重置、旧待处理刷新清空、当前/完成/未执行卡片的实际像素区别、卡片对象与布局保持、只读选择和编辑限制、重复状态不请求重绘/布局，以及头部待机状态。
+
+两个隔离入口 `LegacyRegressionTest#actualPlaybackProgress`、`#playbackTimelineWindow` 分别运行 `PlaybackProgressTest`、`PlaybackTimelineWindowTest`。前者使用计数 Robot 与模拟匹配器，验证前跳跳过动作、回跳、重试、每轮顺序、终止、取消与识别异常不误报完成、识图完成但暂停时的标记、输入尚未结束时不确认暂停、暂停确认回调重入继续不丢唤醒、F11 分流去重/F12 直接停止及观察者异常隔离。后者使用隐藏主窗口和模拟扩展状态/目标准备，检查暂停信号与安全暂停点分离、只读时间线自动显示、页面切换保留标记、继续前准备目标、准备失败保持暂停、最小化设置、迟到通知及停止收尾。测试不注册 Hook、不发送真实键鼠输入、不激活真实目标窗口、不写系统剪贴板；这两个入口在非 Windows 或无桌面时明确跳过。
+
+最终实际命令与结果：
+
+- `mvn '-Dsurefire.timeout=180' '-Dtest=PlaybackProgressBufferTest,TimelinePlaybackProgressTest,StandbyHeadTimelineTest,TimelineNumberingTest,TimelineJumpLayoutTest,LegacyRegressionTest#actualPlaybackProgress+playbackTimelineWindow+pauseHotkeyRepeat+playbackWindowRestore+timelinePlaybackProtection+standbyHeadPlayback' test`：27 项，失败 0、错误 0、跳过 0，退出码 0；日志 `target/playback-timeline-directed-verified.log`。
+- `mvn '-Dsurefire.timeout=180' test`：96 项，失败 0、错误 0、跳过 0，退出码 0；2026-10-24 22:28:54 完成，日志 `target/playback-timeline-full-test-verified.log`。180 秒仅为测试进程的故障超时，未跳过或降低任何断言。
+- `mvn compile`：退出码 0；日志 `target/playback-timeline-compile.log`。本轮生产源码已在定向运行前重新编译。
+
+早期 `target/playback-timeline-directed.log` 因新增测试未处理辅助方法的受检异常而编译失败，退出码 1；修正后 `target/playback-timeline-directed-v2.log` 的 22 项通过。首次完整回归 `target/playback-timeline-full-test.log` 停在此前待机夹具通过回车提交非法值产生的模态警告，主动中断、退出码 1，不能算通过。随后保留同样的非法数值、模型不写入与错误提示断言，改用失焦校验路径，避免自动测试等待用户确认；没有修改产品的回车警告行为。安全暂停点修正后的 `target/playback-timeline-directed-final.log` 27 项通过；测试夹具最后调整后再执行上述最终定向、完整测试与编译，所有旧日志保留。
+
+实现边界：`MacroPlayer` 上报真实节点开始/完成与每轮状态，完成光晕表示本轮执行过，不表示图像匹配成功；跳过及未执行完的动作不标完成。静态内光晕复用主题 success 色，当前卡复用 accent 边框，不增加布局占位、动画计时器或高频日志。`PlaybackProgressBuffer` 合并更新，时间线只重绘变化的卡片。每轮/新播放清空，暂停保留，停止清除当前标记并保留本轮已完成结果；换宏清空，返回同一时间线保留。进度仅存内存，不写 MR、不改变节点 ID 或分支目标。
+
+F11 仍立即设置暂停状态；等播放线程完成在途输入/识别并进入暂停等待后，主窗口才前置到只读时间线。继续按钮与 F11 继续共用目标准备入口，先按配置最小化/激活目标，再解除暂停。没有指定目标窗口的宏若无法确定要恢复的应用，会保持暂停并提示先切回应用再按 F11。F12 始终直接停止，不等待 EDT 处理继续请求。原播放结束恢复配置及原窗口状态记录保留。
+
+`target/playback-timeline-preview/progress-150-final.png` 是真实 Swing 组件的 1.5 倍离屏绘制，用于检查视觉，不是真实 Windows DPI/前台验收。Windows 11、150% DPI 仍需人工检查：F11 暂停后窗口前置与定位、选择/滚动/复制且不能编辑、继续按钮/F11 的目标焦点与最小化设置、F12 停止恢复、图像识别期间暂停、真实前跳/回跳/重试/循环的光晕标记，以及文字清晰度。未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-24：头部待机增量回归
+
+本轮在 75 项基础上新增 11 个标准入口，完整运行 86 项。`StandbyHeadTimelineTest` 的 5 项检查覆盖默认 1000ms、只在线上编辑、非法数值与旧回调保护、开关/编辑权限、插入删除与重载、原卡片布局/编号/分支引用及动作数量保持；`StandbyHeadStorageTest` 的 4 项使用工作区隔离目录，检查等待值与旧文件往返、零/超大等待、负值保存和加载拒绝、原文件与临时文件保全，以及模板路径转换仍保留待机和跳转。
+
+两个 `LegacyRegressionTest` 入口 `standbyHeadSettings`、`standbyHeadPlayback` 使用隔离应用副本：前者构造隐藏设置/主窗口，验证设置保存与取消、配置失败回滚、快捷开关同步、新录制默认和录制收尾；后者注入计数 Robot 和模拟匹配器，验证每轮等待、原动作延迟、暂停冻结、停止、负值预检，以及识图耗时不抵扣后继动作延迟。不显示窗口、不注册 Hook、不发送真实键鼠输入；这两个入口在非 Windows 或无桌面时明确跳过。
+
+实际命令与结果：
+
+- `mvn '-Dtest=StandbyHeadTimelineTest,StandbyHeadStorageTest,TimelineNumberingTest,TimelineJumpLayoutTest,LegacyRegressionTest#standbyHeadSettings+standbyHeadPlayback+timelineHeadlessEditing+timelinePlaybackProtection+imageCheckBehaviors+playbackDelayBounds' test`：23 项，失败 0、错误 0、跳过 0，退出码 0；日志 `target/standby-head-directed-verified.log`。
+- `mvn test`：86 项，失败 0、错误 0、跳过 0，退出码 0；2026-10-24 19:46:38 完成，日志 `target/standby-head-full-test.log`。
+- `mvn compile`：退出码 0；日志 `target/standby-head-compile.log`。生产源码已在本轮定向运行前重新编译。
+
+首轮定向测试 13 项中 4 项存储检查在系统临时目录替换文件时遇到 AccessDenied，退出码 1，日志 `target/standby-head-directed.log` 保留。新增存储夹具随后改用项目现有的工作区隔离目录，断言和实际保存逻辑保持不变；上述最终定向及完整测试均已实际重跑通过。
+
+使用约定：设置页与时间线共用「增加待机头节点」开关，修改时作用于当前宏并记作新录制默认选择；打开已有宏以文件内保存状态为准。开启时默认额外等待 1000ms，不提供默认时长设置项；连线只修改本宏的待机值，原首动作自身延迟仍保留。每轮从流程入口开始前等待，分支回跳不再次执行头部等待。不新增尾部待机、真实动作类型或跳转目标；MR 新增可选 `flow.headWaitMillis`，旧文件缺省表示关闭，关闭时不写此字段，格式版本号未变。
+
+Windows 11、150% DPI 仍需人工检查两个开关的实际操作、连线时间编辑、只读待机卡、原有节点布局/跳转、新录制与保存重开，以及等待期间的暂停、恢复和 F12 停止。自动计数和程序化控件检查不等于真实桌面验收。面向使用者的简明变化见 [更新日志](../CHANGELOG.md)。本轮未执行 `mvn clean`，未提交、未推送。
+
+## 2026-10-24：Windows 单实例启动增量回归
+
+本轮新增 `WindowsSingleInstanceTest` 的 5 项标准测试入口，在此前 70 项（含 F12 播放窗口恢复回归）基础上，完整测试实际执行 75 项。新增测试使用独立实例标识、真实 Windows 互斥量与 message-only 窗口及独立 JVM，检查跨进程重复启动通知、同时启动唯一主实例、关闭后重新获取、异常终止后立即重启、回调异常后的通知与互斥量保全；不启动应用 UI、不读个人配置、不发送真实键鼠输入。非 Windows 平台明确跳过这 5 项。
+
+最终命令与结果：
+
+- `mvn '-Dtest=WindowsSingleInstanceTest,LegacyRegressionTest#playbackWindowRestore+recordingTitleBarContract+pauseHotkeyRepeat' test`：8 项，失败 0、错误 0、跳过 0，退出码 0；日志 `target/single-instance-directed-verified.log`。
+- `mvn test`：75 项，失败 0、错误 0、跳过 0，退出码 0；2026-10-24 18:05:42 完成，日志 `target/single-instance-full-test.log`。
+- `mvn compile`：退出码 0；2026-10-24 18:06:10 完成，日志 `target/single-instance-compile.log`。生产代码已在定向运行时重新编译。
+
+初次编译缺少 JNA 未声明的 `WM_APP` 常量、首轮原生测试中的 64 位 `HWND_MESSAGE` 指针值，以及异常终止后立即启动的资源回收竞争均已修正。失败日志保留在 `target/single-instance-initial-compile.log`、`target/single-instance-directed.log`、`target/single-instance-native-tests.log` 和 `target/single-instance-native-tests-final.log`，不将这些尝试算作通过。回收竞争修复后的单项检查为 1 项通过，日志 `target/single-instance-crash-retry-test.log`；随后已执行上述最终定向、完整测试与编译。
+
+真实可见窗口前置、最小化恢复、录制/播放时重复启动及 150% DPI 尚未人工验收，见 [单实例行为与人工清单](single-instance.md)。未执行 `mvn clean`，未提交、未推送。
+
+## 1.0.0 收尾及历史记录
+
+1.0.0 正式版收尾已在统一版本后重新验证：2026-10-21 定向 51 项（12:12:41 完成）、完整 69 项（12:13:56 完成），失败/错误/跳过均为 0、退出码 0；12:14:10 完成的 `mvn compile` 退出码 0。原始日志为 `target/release-1.0.0-directed.log`、`target/release-1.0.0-full-test.log` 和 `target/release-1.0.0-compile.log`。本地收尾提交为 `5c2d464c29c488c90b381edc2422c775f332dadf`，不包含推送、标签或安装包发布。原收尾过程文档已删除，历史内容可从 Git 查看；本段及下文历史结果不代替文首最新运行结果。
 
 ## 运行
 

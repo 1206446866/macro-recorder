@@ -1,6 +1,9 @@
 package com.macro.exception;
 
+import lombok.Getter;
+
 /** MR 文件格式版本与当前软件不兼容时抛出的异常。 */
+@Getter
 public class MacroFormatException extends Exception {
 
     private final int fileVersion;
@@ -10,14 +13,6 @@ public class MacroFormatException extends Exception {
         super(createMessage(fileVersion, currentVersion));
         this.fileVersion = fileVersion;
         this.currentVersion = currentVersion;
-    }
-
-    public int getFileVersion() {
-        return fileVersion;
-    }
-
-    public int getCurrentVersion() {
-        return currentVersion;
     }
 
     private static String createMessage(int fileVersion, int currentVersion) {

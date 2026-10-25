@@ -1,6 +1,7 @@
 package com.macro.ui;
 
 import com.macro.constant.UiConstants;
+import com.macro.constant.ApplicationInfo;
 
 import com.macro.config.AppConfig;
 import com.macro.config.RecordingStartBehavior;
@@ -13,12 +14,15 @@ import com.macro.ui.filedialog.FileDialogServiceFactory;
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
 import com.macro.ui.util.ComponentStyleUtil;
+import com.macro.ui.window.WindowTitleBarSupport;
 import com.macro.ui.util.NumericInputUtil;
 
 import javax.swing.*;
 import javax.swing.border.CompoundBorder;
 import javax.swing.border.EmptyBorder;
 import com.macro.ui.util.DarkButtonUI;
+import lombok.Getter;
+
 import java.awt.*;
 import java.awt.event.KeyEvent;
 import java.io.File;
@@ -28,6 +32,19 @@ import java.util.function.Consumer;
 
 /** 程序设置窗口。 */
 public class SettingsDialog extends JDialog {
+    private final WindowTitleBarSupport titleBarSupport;
+
+    /** 设置窗口仍使用原有模态机制，在 HWND 创建后启用统一标题栏。 */
+    @Override public void addNotify() {
+        super.addNotify();
+        if (titleBarSupport != null) titleBarSupport.activate();
+    }
+
+    /** 原生句柄销毁前卸载标题栏，不触发设置保存。 */
+    @Override public void removeNotify() {
+        try { if (titleBarSupport != null) titleBarSupport.deactivate(); }
+        finally { super.removeNotify(); }
+    }
 
     private static final ThemePalette THEME = ThemeManager.getPalette();
     private static final Font FONT_NORMAL = new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 13);
@@ -47,6 +64,13 @@ public class SettingsDialog extends JDialog {
     private final JButton cancelButton = new JButton("取消");
     private final JButton saveButton = new JButton("保存");
     private final JCheckBox recordMouseMoveCheckBox = new JCheckBox("录制鼠标移动");
+    private final JCheckBox standbyHeadCheckBox = new JCheckBox("增加待机头节点");
+    /**
+     * -- GETTER --
+     * 返回本次设置窗口是否成功保存，供主窗口区分取消与确认。
+     */
+    @Getter
+    private boolean settingsSaved;
     private final JRadioButton recordingMinimizeButton = new JRadioButton("最小化");
     private final JRadioButton recordingControlBarButton = new JRadioButton("控制栏");
     private final JRadioButton recordingUnchangedButton = new JRadioButton("无");
@@ -65,6 +89,7 @@ public class SettingsDialog extends JDialog {
     private final JCheckBox rememberTargetWindowCheckBox =
             new JCheckBox("记住上次选择的目标窗口");
 
+    /** 绑定应用配置，组装设置分类和保存入口，再加载当前配置到表单。 */
     public SettingsDialog(Frame owner, AppConfig appConfig) {
         super(owner, "设置", true);
         this.appConfig = appConfig;
@@ -72,8 +97,10 @@ public class SettingsDialog extends JDialog {
         initLayout();
         initEvents();
         loadSettings();
+        titleBarSupport = new WindowTitleBarSupport(this);
     }
 
+    /** 设置对话框大小、最小尺寸和相对父窗口的位置。 */
     private void initDialog() {
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setSize(920, 640);
@@ -81,6 +108,7 @@ public class SettingsDialog extends JDialog {
         setLocationRelativeTo(getOwner());
     }
 
+    /** 组装侧栏、分类内容和底部按钮，并安装默认保存与 Esc 取消行为。 */
     private void initLayout() {
         JPanel rootPanel = new JPanel(new BorderLayout());
         rootPanel.setBackground(THEME.background());
@@ -105,6 +133,7 @@ public class SettingsDialog extends JDialog {
         );
     }
 
+    /** 创建设置保存与取消按钮区域，使用现有主题和分隔边框。 */
     private JPanel createFooter() {
         JPanel footer = new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 14));
         footer.setBackground(THEME.background());
@@ -124,6 +153,7 @@ public class SettingsDialog extends JDialog {
         return footer;
     }
 
+    /** 将目录选择、保存和取消按钮绑定到统一设置操作。 */
     private void initEvents() {
         chooseDirectoryButton.addActionListener(e -> chooseDefaultSaveDirectory());
         chooseScreenCaptureDirectoryButton.addActionListener(
@@ -133,6 +163,7 @@ public class SettingsDialog extends JDialog {
         saveButton.addActionListener(e -> saveSettings());
     }
 
+    /** 读取当前配置并填充各分类控件，尚未开放修改的固定行为保持禁用。 */
     private void loadSettings() {
         File directory = appConfig.getDefaultSaveDirectory();
         defaultSaveDirectoryField.setText(directory.getAbsolutePath());
@@ -153,12 +184,14 @@ public class SettingsDialog extends JDialog {
         restoreWindowAfterPlayStopCheckBox.setSelected(
                 appConfig.isRestoreWindowAfterPlayStop()
         );
+        standbyHeadCheckBox.setSelected(appConfig.isStandbyHeadEnabled());
 
         // 这两个选项与现有固定行为一致，第一阶段不持久化。
         restoreWindowAfterRecordingCheckBox.setSelected(true);
         rememberTargetWindowCheckBox.setSelected(true);
     }
 
+    /** 通过现有原生目录面板选择默认宏目录，确认后只更新待保存表单。 */
     private void chooseDefaultSaveDirectory() {
         chooseDirectory(
                 "选择默认 MR 保存目录",
@@ -191,6 +224,7 @@ public class SettingsDialog extends JDialog {
         }
     }
 
+    /** 校验目录和数值后统一保存设置，成功才标记已保存并关闭；失败保留窗口与原配置。 */
     private void saveSettings() {
         File directory = validateDirectory(
                 defaultSaveDirectoryField,
@@ -225,13 +259,21 @@ public class SettingsDialog extends JDialog {
                 getSelectedRecordingStartBehavior(),
                 insertAfterButton.isSelected() ? TimelineInsertPosition.AFTER : TimelineInsertPosition.BEFORE,
                 minimizeOnPlayStartCheckBox.isSelected(),
-                restoreWindowAfterPlayStopCheckBox.isSelected()
+                restoreWindowAfterPlayStopCheckBox.isSelected(),
+                standbyHeadCheckBox.isEnabled() ? standbyHeadCheckBox.isSelected() : appConfig.isStandbyHeadEnabled()
         );
         if (!saved) {
             showError("配置文件保存失败，请检查程序目录是否可写。设置窗口将保持打开。");
             return;
         }
+        settingsSaved = true;
         dispose();
+    }
+
+    /** 主窗口传入当前宏的状态，保存后再统一应用，取消不会改变宏。 */
+    public void setStandbyHeadState(boolean selected, boolean editable) {
+        standbyHeadCheckBox.setSelected(selected);
+        standbyHeadCheckBox.setEnabled(editable);
     }
 
     /** 仅在保存时读取互斥选项，取消设置不会修改配置。 */
@@ -263,21 +305,26 @@ public class SettingsDialog extends JDialog {
         return directory;
     }
 
+    /** 在当前设置窗口显示统一的参数或目录警告。 */
     private void showWarning(String message) {
         AppMessageDialog.showWarning(this, message);
     }
 
+    /** 在当前设置窗口显示无法完成保存等错误。 */
     private void showError(String message) {
         AppMessageDialog.showError(this, message);
     }
 
+    /** 承载设置分类页面和标题，滚动范围只按当前显示页面计算。 */
     private class SettingsContentPanel extends JPanel {
 
         private final CardLayout pageLayout = new CardLayout();
         private final JPanel pages = new JPanel(pageLayout);
         private final JLabel titleLabel = new JLabel();
         private final JLabel descriptionLabel = new JLabel();
+        private final JScrollPane scrollPane;
 
+        /** 创建各设置页面及共享滚动区域，初始显示录制设置。 */
         private SettingsContentPanel() {
             setLayout(new BorderLayout(0, 18));
             setOpaque(false);
@@ -300,8 +347,10 @@ public class SettingsDialog extends JDialog {
             pages.add(new PlaybackSettingsPanel(), SettingsSection.PLAYBACK.name());
             pages.add(new FileSettingsPanel(), SettingsSection.FILE.name());
             pages.add(new InterfaceSettingsPanel(), SettingsSection.INTERFACE.name());
+            pages.add(new ShortcutsSettingsPanel(), SettingsSection.SHORTCUTS.name());
+            pages.add(new AboutSettingsPanel(), SettingsSection.ABOUT.name());
 
-            JScrollPane scrollPane = new JScrollPane(
+            scrollPane = new JScrollPane(
                     pages,
                     JScrollPane.VERTICAL_SCROLLBAR_AS_NEEDED,
                     JScrollPane.HORIZONTAL_SCROLLBAR_NEVER
@@ -315,16 +364,114 @@ public class SettingsDialog extends JDialog {
             showSection(SettingsSection.RECORDING);
         }
 
+        /** 切换分类标题和内容，按当前页恢复滚动高度并回到顶部。 */
         private void showSection(SettingsSection section) {
             titleLabel.setText(section.title);
             descriptionLabel.setText(section.description);
             pageLayout.show(pages, section.name());
+            // 快捷键列表较长；仅按当前页面计算滚动高度，避免其他页面也留下大段空白。
+            for (Component page : pages.getComponents()) {
+                if (page.isVisible()) {
+                    pages.setPreferredSize(page.getPreferredSize());
+                    break;
+                }
+            }
+            pages.revalidate();
+            scrollPane.getViewport().setViewPosition(new Point());
+        }
+    }
+
+    /** 只展示已经存在的快捷键，不注册新绑定，也不参与配置保存。 */
+    private class ShortcutsSettingsPanel extends JPanel {
+        /** 按使用场景列出当前固定快捷键，只展示说明，不注册绑定或参与配置保存。 */
+        private ShortcutsSettingsPanel() {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            setOpaque(false);
+            addGroup("录制与播放 · 全局",
+                    new String[]{"F10", "录制时截图", "录制或录制暂停时可用"},
+                    new String[]{"F11", "暂停 / 继续播放", "播放中可暂停，停稳后查看时间线"},
+                    new String[]{"F12", "停止录制 / 播放", "录制、播放及其暂停状态下可用"});
+            addGroup("时间线编辑",
+                    new String[]{"Delete", "删除选中操作", "时间线获得焦点且允许编辑时可用"},
+                    new String[]{"Enter", "保存当前输入", "编辑坐标或连线等待时间时可用"},
+                    new String[]{"Esc", "取消当前输入", "编辑坐标或连线等待时间时可用"});
+            addGroup("截图与图像采集",
+                    new String[]{"Enter", "确认截图", "框选出有效区域后可用"},
+                    new String[]{"Esc", "取消截图", "屏幕框选期间可用"},
+                    new String[]{"Alt + F4", "取消截图", "屏幕框选期间可用"},
+                    new String[]{"Ctrl + V", "粘贴图片", "图像采集页可用，文字输入框除外"});
+            addGroup("设置与提示窗口",
+                    new String[]{"Enter", "保存设置 / 确认提示", "窗口默认按钮可用时生效"},
+                    new String[]{"Esc", "关闭设置，不保存修改", "设置窗口中可用"},
+                    new String[]{"Esc", "关闭图像识别窗口", "图像识别窗口中可用"},
+                    new String[]{"Esc", "关闭提示窗口", "提示窗口中可用"});
+        }
+
+        /** 将一组按键、用途和生效条件加入主题卡片，使用只读标签和固定键帽区域。 */
+        private void addGroup(String title, String[]... shortcuts) {
+            if (getComponentCount() > 0) add(Box.createVerticalStrut(14));
+            RoundedPanel card = createSettingsCard(title);
+            for (int i = 0; i < shortcuts.length; i++) {
+                if (i > 0) card.add(Box.createVerticalStrut(14));
+                String[] shortcut = shortcuts[i];
+                JPanel row = new JPanel(new BorderLayout(16, 0));
+                row.setOpaque(false);
+                row.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+                RoundedPanel keyCap = new RoundedPanel(THEME.controlBackground(), 8);
+                keyCap.setLayout(new BorderLayout());
+                keyCap.setPreferredSize(new Dimension(96, 40));
+                JLabel key = createNormalLabel(shortcut[0]);
+                key.setFont(FONT_BOLD);
+                key.setHorizontalAlignment(SwingConstants.CENTER);
+                keyCap.add(key, BorderLayout.CENTER);
+                row.add(keyCap, BorderLayout.WEST);
+
+                JPanel explanation = new JPanel(new GridLayout(2, 1, 0, 4));
+                explanation.setOpaque(false);
+                explanation.add(createNormalLabel(shortcut[1]));
+                explanation.add(createSecondaryLabel(shortcut[2]));
+                row.add(explanation, BorderLayout.CENTER);
+                row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
+                card.add(row);
+            }
+            card.setMaximumSize(new Dimension(Integer.MAX_VALUE, card.getPreferredSize().height));
+            add(card);
+        }
+    }
+
+    /** 只展示软件信息，名称和版本共用应用常量，不参与配置保存。 */
+    private class AboutSettingsPanel extends JPanel {
+        /** 使用现有主题卡片显示名称、版本、用途及适用平台。 */
+        private AboutSettingsPanel() {
+            setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
+            setOpaque(false);
+
+            RoundedPanel card = createSettingsCard(ApplicationInfo.APP_NAME);
+            JLabel version = createSecondaryLabel("版本 " + ApplicationInfo.APP_VERSION);
+            card.add(version);
+            card.add(Box.createVerticalStrut(20));
+            JLabel purpose = createNormalLabel("键盘与鼠标宏录制工具");
+            card.add(purpose);
+            card.add(Box.createVerticalStrut(8));
+            JLabel features = createSecondaryLabel("录制、编辑和播放键鼠操作，支持截图与图像识别。");
+            card.add(features);
+            card.add(Box.createVerticalStrut(20));
+            JLabel platform = createSecondaryLabel("适用平台：Windows");
+            card.add(platform);
+            for (JLabel label : new JLabel[]{version, purpose, features, platform}) {
+                label.setAlignmentX(Component.LEFT_ALIGNMENT);
+                label.setMaximumSize(new Dimension(Integer.MAX_VALUE, label.getPreferredSize().height));
+            }
+            card.setMaximumSize(new Dimension(Integer.MAX_VALUE, card.getPreferredSize().height));
+            add(card);
         }
     }
 
     /** 播放设置页面。 */
     private class PlaybackSettingsPanel extends JPanel {
 
+        /** 组装播放开始最小化和结束恢复窗口的行为选项。 */
         private PlaybackSettingsPanel() {
             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
             setOpaque(false);
@@ -339,12 +486,14 @@ public class SettingsDialog extends JDialog {
         }
     }
 
-    private class SettingsSidebar extends JPanel {
+    /** 提供设置分类导航，并统一维护按钮选中状态。 */
+    private static class SettingsSidebar extends JPanel {
 
         private final Map<SettingsSection, JButton> navigationButtons =
                 new EnumMap<>(SettingsSection.class);
         private final Consumer<SettingsSection> onSelectionChanged;
 
+        /** 按现有设置分类创建导航按钮，并默认选中录制页面。 */
         private SettingsSidebar(Consumer<SettingsSection> onSelectionChanged) {
             this.onSelectionChanged = onSelectionChanged;
             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
@@ -368,6 +517,7 @@ public class SettingsDialog extends JDialog {
             select(SettingsSection.RECORDING);
         }
 
+        /** 创建左对齐的主题导航按钮，点击时交由侧栏统一切换分类。 */
         private JButton createNavigationButton(SettingsSection section) {
             JButton button = new JButton(section.navigationText);
             button.setFont(new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 14));
@@ -390,17 +540,21 @@ public class SettingsDialog extends JDialog {
             return button;
         }
 
+        /** 同步所有导航按钮的选中样式，再通知内容区切换页面。 */
         private void select(SettingsSection section) {
             navigationButtons.forEach((item, button) -> {
                 button.putClientProperty("settings.selected", item == section);
+                button.setForeground(item == section ? THEME.textOnAccent() : THEME.textPrimary());
                 button.repaint();
             });
             onSelectionChanged.accept(section);
         }
     }
 
+    /** 组织鼠标采样、录制窗口行为和目标窗口选项。 */
     private class RecordingSettingsPanel extends JPanel {
 
+        /** 按统一卡片间距组装录制相关设置。 */
         private RecordingSettingsPanel() {
             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
             setOpaque(false);
@@ -411,6 +565,7 @@ public class SettingsDialog extends JDialog {
             add(createTargetWindowCard());
         }
 
+        /** 组合鼠标移动录制开关和采样间隔，并安装数值校验。 */
         private JPanel createMouseRecordingCard() {
             RoundedPanel card = createSettingsCard("鼠标录制");
             styleCheckBox(recordMouseMoveCheckBox);
@@ -439,6 +594,7 @@ public class SettingsDialog extends JDialog {
             return card;
         }
 
+        /** 创建录制启动时的窗口行为选择及停止恢复说明。 */
         private JPanel createRecordingBehaviorCard() {
             RoundedPanel card = createSettingsCard("录制行为");
             styleCheckBox(restoreWindowAfterRecordingCheckBox);
@@ -453,6 +609,7 @@ public class SettingsDialog extends JDialog {
             return card;
         }
 
+        /** 展示目标窗口记忆选项及其用途说明。 */
         private JPanel createTargetWindowCard() {
             RoundedPanel card = createSettingsCard("目标窗口");
             styleCheckBox(rememberTargetWindowCheckBox);
@@ -469,10 +626,16 @@ public class SettingsDialog extends JDialog {
 
     /** 界面设置中只增加时间线默认插入方向，不改变显式位置操作。 */
     private class InterfaceSettingsPanel extends JPanel {
+        /** 组装时间线头部待机和默认插入方向设置，待机时长仍由时间线编辑。 */
         private InterfaceSettingsPanel() {
             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
             setOpaque(false);
             RoundedPanel card = createSettingsCard("时间线");
+            styleCheckBox(standbyHeadCheckBox);
+            card.add(standbyHeadCheckBox);
+            card.add(Box.createVerticalStrut(8));
+            card.add(createSecondaryLabel("在开头增加待机，等待时间在时间线连线上修改。"));
+            card.add(Box.createVerticalStrut(16));
             JLabel label = createNormalLabel("默认插入位置");
             label.setAlignmentX(Component.LEFT_ALIGNMENT);
             card.add(label);
@@ -486,8 +649,10 @@ public class SettingsDialog extends JDialog {
         }
     }
 
+    /** 展示宏与截图的默认保存位置，以及启动时加载行为。 */
     private class FileSettingsPanel extends JPanel {
 
+        /** 创建只读目录显示、目录选择入口和启动选项。 */
         private FileSettingsPanel() {
             setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
             setOpaque(false);
@@ -557,6 +722,7 @@ public class SettingsDialog extends JDialog {
         return row;
     }
 
+    /** 创建带标题和统一内边距的圆角设置卡片。 */
     private RoundedPanel createSettingsCard(String title) {
         RoundedPanel card = new RoundedPanel(THEME.card(), 14);
         card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
@@ -567,6 +733,7 @@ public class SettingsDialog extends JDialog {
         return card;
     }
 
+    /** 创建设置卡片的主题分区标题。 */
     private JLabel createSectionLabel(String text) {
         JLabel label = new JLabel(text);
         label.setFont(FONT_SECTION);
@@ -575,6 +742,7 @@ public class SettingsDialog extends JDialog {
         return label;
     }
 
+    /** 创建设置表单的常规文字标签。 */
     private JLabel createNormalLabel(String text) {
         JLabel label = new JLabel(text);
         label.setFont(FONT_NORMAL);
@@ -582,6 +750,7 @@ public class SettingsDialog extends JDialog {
         return label;
     }
 
+    /** 创建低对比度的设置辅助说明标签。 */
     private JLabel createSecondaryLabel(String text) {
         JLabel label = new JLabel(text);
         label.setFont(FONT_NORMAL);
@@ -589,25 +758,31 @@ public class SettingsDialog extends JDialog {
         return label;
     }
 
+    /** 应用公共复选框主题、字体和左对齐方式。 */
     private void styleCheckBox(JCheckBox checkBox) {
         ComponentStyleUtil.styleCheckBox(checkBox);
         checkBox.setFont(FONT_NORMAL);
         checkBox.setAlignmentX(Component.LEFT_ALIGNMENT);
     }
 
+    /** 为目录等文本字段应用统一字体和深色输入样式。 */
     private void styleTextField(JTextField textField) {
         textField.setFont(FONT_NORMAL);
         ComponentStyleUtil.styleTextField(textField);
     }
 
+    /** 为保存等主要操作应用主题强调背景。 */
     private void stylePrimaryButton(JButton button) {
         styleButton(button, THEME.accent(), THEME.accentHover());
+        button.setForeground(THEME.textOnAccent());
     }
 
+    /** 为取消和目录选择应用主题次要操作背景。 */
     private void styleSecondaryButton(JButton button) {
         styleButton(button, THEME.controlBackground(), THEME.card());
     }
 
+    /** 统一按钮字体、间距、鼠标反馈和圆角绘制，不改变按钮业务回调。 */
     private void styleButton(JButton button, Color background, Color hoverBackground) {
         button.setFont(FONT_BOLD);
         button.setForeground(THEME.textPrimary());
@@ -627,7 +802,9 @@ public class SettingsDialog extends JDialog {
         RECORDING("录制", "录制设置", "配置录制相关的行为和选项", SettingsIconType.RECORD),
         PLAYBACK("播放", "播放设置", "配置宏播放相关的行为和选项", SettingsIconType.PLAY),
         FILE("文件", "文件设置", "配置宏文件、截图的保存位置和启动加载行为", SettingsIconType.FILE),
-        INTERFACE("界面", "界面设置", "配置界面和时间线编辑行为", SettingsIconType.INTERFACE);
+        INTERFACE("界面", "界面设置", "配置界面和时间线编辑行为", SettingsIconType.INTERFACE),
+        SHORTCUTS("快捷键", "快捷键", "当前快捷键为固定按键，暂不支持修改。", SettingsIconType.KEYBOARD),
+        ABOUT("关于", "关于", "软件信息", SettingsIconType.ABOUT);
 
         private final String navigationText;
         private final String title;
@@ -644,13 +821,15 @@ public class SettingsDialog extends JDialog {
     }
 
     private enum SettingsIconType {
-        RECORD, PLAY, FILE, INTERFACE, FOLDER, CHECK, CLOSE
+        RECORD, PLAY, FILE, INTERFACE, KEYBOARD, ABOUT, FOLDER, CHECK, CLOSE
     }
 
+    /** 按设置分类或按钮用途绘制轻量主题图标。 */
     private record SettingsIcon(SettingsIconType type) implements Icon {
 
             private static final int SIZE = 18;
 
+        /** 使用组件当前前景色绘制设置导航或操作图形。 */
         @Override
             public void paintIcon(Component component, Graphics graphics, int x, int y) {
                 Graphics2D g2 = (Graphics2D) graphics.create();
@@ -676,10 +855,22 @@ public class SettingsDialog extends JDialog {
                         g2.drawLine(9, 13, 9, 16);
                         g2.drawLine(6, 16, 12, 16);
                     }
+                    case KEYBOARD -> {
+                        g2.drawRoundRect(1, 4, 16, 10, 2, 2);
+                        for (int keyX = 4; keyX <= 13; keyX += 3) {
+                            g2.drawLine(keyX, 7, keyX, 7);
+                        }
+                        g2.drawLine(5, 11, 13, 11);
+                    }
                     case FOLDER -> {
                         g2.drawRoundRect(2, 5, 14, 10, 3, 3);
                         g2.drawLine(3, 5, 7, 5);
                         g2.drawLine(7, 5, 8, 7);
+                    }
+                    case ABOUT -> {
+                        g2.drawOval(2, 2, 14, 14);
+                        g2.fillOval(8, 5, 2, 2);
+                        g2.drawLine(9, 9, 9, 13);
                     }
                     case CHECK -> {
                         g2.drawLine(3, 9, 7, 13);
@@ -693,27 +884,32 @@ public class SettingsDialog extends JDialog {
                 g2.dispose();
             }
 
+            /** 返回设置图标固定的逻辑宽度。 */
             @Override
             public int getIconWidth() {
                 return SIZE;
             }
 
+            /** 返回设置图标固定的逻辑高度。 */
             @Override
             public int getIconHeight() {
                 return SIZE;
             }
         }
 
+    /** 绘制设置窗口普通操作按钮的圆角背景和状态反馈。 */
     private static class RoundedButtonUI extends DarkButtonUI {
 
         private final Color background;
         private final Color hoverBackground;
 
+        /** 保存操作按钮默认和悬停背景颜色。 */
         private RoundedButtonUI(Color background, Color hoverBackground) {
             this.background = background;
             this.hoverBackground = hoverBackground;
         }
 
+        /** 按禁用、按下或悬停状态绘制圆角按钮，再绘制文字和图标。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -739,8 +935,10 @@ public class SettingsDialog extends JDialog {
         }
     }
 
+    /** 按分类选中和悬停状态绘制侧栏导航按钮。 */
     private static class NavigationButtonUI extends DarkButtonUI {
 
+        /** 读取分类选中标记并绘制对应背景，保持导航文字及图标位置不变。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -761,17 +959,20 @@ public class SettingsDialog extends JDialog {
         }
     }
 
+    /** 为设置内容提供统一圆角卡片背景。 */
     private static class RoundedPanel extends JPanel {
 
         private final Color background;
         private final int radius;
 
+        /** 保存卡片背景色与圆角半径，避免系统填充矩形底色。 */
         private RoundedPanel(Color background, int radius) {
             this.background = background;
             this.radius = radius;
             setOpaque(false);
         }
 
+        /** 按组件实际大小铺满圆角主题背景，再绘制面板内容。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();

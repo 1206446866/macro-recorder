@@ -4,7 +4,6 @@ import java.awt.Point;
 import java.awt.Rectangle;
 import java.awt.geom.Path2D;
 import java.util.*;
-import java.util.List;
 
 /** 只计算显示路径；目标身份始终由分支 ID 提供，不创建或改动流程节点。 */
 final class TimelineBranchLayout {
@@ -13,11 +12,13 @@ final class TimelineBranchLayout {
     record Route(Edge edge, List<Point> points, boolean forward, int laneY) { }
     private record Side(String nodeId, boolean right) { }
 
+    /** 按实际分支 ID 与卡片边界计算下方绕行路径，为交叉连接分配端口和轨道，并保持出线与入箭头水平同高。 */
     static List<Route> routes(Map<String, Rectangle> cards, List<Edge> edges) {
         int sequenceY = cards.values().stream().mapToInt(r -> r.y + r.height - 70).max().orElse(0);
         return routes(cards, edges, sequenceY);
     }
 
+    /** 按实际分支 ID 与卡片边界计算下方绕行路径，为交叉连接分配端口和轨道，并保持出线与入箭头水平同高。 */
     static List<Route> routes(Map<String, Rectangle> cards, List<Edge> edges, int sequenceY) {
         List<Edge> valid = edges.stream().filter(e -> !e.sourceId().equals(e.targetId())
                 && cards.containsKey(e.sourceId()) && cards.containsKey(e.targetId())).toList();

@@ -11,7 +11,7 @@
 | 动作延迟 | ActionEditorDialog、时间线内联编辑 | long，0～9223372036854775807 | ms；新普通动作默认 0，保留原 delay 语义 |
 | 图像识别重试延迟 | ActionEditorDialog，与动作延迟共用输入框 | long，0～9223372036854775807 | ms；新图像节点默认 1000 |
 | 图像匹配阈值 | ActionEditorDialog | Integer Spinner，1～100 | 整数百分比；默认 90；存储仍除以 100 转为小数 |
-| 测试匹配阈值 | ImageRecognitionFrame | Integer Spinner，50～100 | 整数百分比；默认 90。与节点编辑器的既有范围不同，分别保留 |
+| 测试匹配阈值 | ImageRecognitionFrame | Integer Spinner，1～100 | 整数百分比；默认 90。支持载入当前图像节点的完整阈值范围 |
 | X、Y 坐标 | ActionEditorDialog、时间线内联编辑 | int，-2147483648～2147483647 | 屏幕逻辑坐标；新动作默认 0；不新增屏幕边界限制 |
 | 滚轮量 | ActionEditorDialog | int，-2147483648～2147483647 | 滚轮刻度；新动作默认 1；保留正负方向，原本允许的 0 继续允许 |
 

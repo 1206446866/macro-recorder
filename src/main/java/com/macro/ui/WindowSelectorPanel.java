@@ -52,6 +52,7 @@ public class WindowSelectorPanel extends JPanel {
     @Setter
     private Runnable onConfirm;
 
+    /** 创建目标窗口选择页，绑定导航和确认按钮，并以未选中状态初始化信息卡。 */
     public WindowSelectorPanel() {
         setLayout(new BorderLayout(0, 18));
         setBackground(THEME.background());
@@ -124,7 +125,7 @@ public class WindowSelectorPanel extends JPanel {
         styleButton(reselectButton, false);
         reselectButton.setIcon(new SelectorIcon(IconType.RESELECT, 16, THEME.textPrimary()));
         styleButton(confirmButton, true);
-        confirmButton.setIcon(new SelectorIcon(IconType.CONFIRM, 16, Color.WHITE));
+        confirmButton.setIcon(new SelectorIcon(IconType.CONFIRM, 16, THEME.textOnAccent()));
         buttons.add(reselectButton);
         buttons.add(confirmButton);
         footer.add(buttons, BorderLayout.EAST);
@@ -138,6 +139,7 @@ public class WindowSelectorPanel extends JPanel {
         guide.setBorder(new EmptyBorder(15, 17, 15, 17));
 
         JPanel iconHolder = new JPanel(new GridBagLayout()) {
+            /** 绘制选择提示图标背后的半透明强调圆，保留父面板的后续绘制。 */
             @Override
             protected void paintComponent(Graphics graphics) {
                 Graphics2D g2 = (Graphics2D) graphics.create();
@@ -294,7 +296,7 @@ public class WindowSelectorPanel extends JPanel {
         Color background = primary ? THEME.accent() : THEME.controlBackground();
         Color hover = primary ? THEME.accentHover() : THEME.card();
         button.setFont(FONT_BOLD);
-        button.setForeground(primary ? Color.WHITE : THEME.textPrimary());
+        button.setForeground(primary ? THEME.textOnAccent() : THEME.textPrimary());
         button.setBorder(new EmptyBorder(9, 14, 9, 14));
         button.setIconTextGap(7);
         button.setFocusPainted(false);
@@ -318,15 +320,18 @@ public class WindowSelectorPanel extends JPanel {
     private static final class SelectionCard extends JPanel {
         private boolean selected;
 
+        /** 初始化由选择状态驱动边框颜色的透明信息卡。 */
         private SelectionCard() {
             setOpaque(false);
         }
 
+        /** 记录是否已有选中目标，并重绘卡片边框以反馈选择状态。 */
         private void setSelected(boolean selected) {
             this.selected = selected;
             repaint();
         }
 
+        /** 根据是否选中窗口绘制常规或强调边框，保持卡片内容布局不变。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -347,6 +352,7 @@ public class WindowSelectorPanel extends JPanel {
         private final Color border;
         private final int radius;
 
+        /** 保存主题背景、边框和圆角半径，供窗口信息区域统一绘制。 */
         private RoundedPanel(Color background, Color border, int radius) {
             this.background = background;
             this.border = border;
@@ -354,6 +360,7 @@ public class WindowSelectorPanel extends JPanel {
             setOpaque(false);
         }
 
+        /** 绘制窗口选择页卡片的圆角背景和细边框。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -372,11 +379,13 @@ public class WindowSelectorPanel extends JPanel {
         private final Color background;
         private final Color hover;
 
+        /** 保存按钮背景与悬停颜色，供确认和导航操作复用。 */
         private RoundedButtonUI(Color background, Color hover) {
             this.background = background;
             this.hover = hover;
         }
 
+        /** 按禁用、按下或悬停状态绘制按钮反馈，再绘制按钮内容。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -384,7 +393,7 @@ public class WindowSelectorPanel extends JPanel {
             if (!button.isEnabled()) {
                 fill = blend(background, THEME.card(), 0.58);
             } else if (button.getModel().isPressed()) {
-                fill = blend(hover, Color.BLACK, 0.16);
+                fill = blend(hover, THEME.shadow(), 0.16);
             } else if (button.getModel().isRollover()) {
                 fill = hover;
             }
@@ -393,7 +402,9 @@ public class WindowSelectorPanel extends JPanel {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setColor(fill);
             g2.fillRoundRect(0, 0, component.getWidth(), component.getHeight(), 12, 12);
-            g2.setColor(new Color(255, 255, 255, button.isEnabled() ? 18 : 8));
+            Color highlight = THEME.highlight();
+            g2.setColor(new Color(highlight.getRed(), highlight.getGreen(), highlight.getBlue(),
+                    button.isEnabled() ? 18 : 8));
             g2.drawRoundRect(0, 0, component.getWidth() - 1, component.getHeight() - 1, 12, 12);
             g2.dispose();
             super.paint(graphics, component);
@@ -402,63 +413,70 @@ public class WindowSelectorPanel extends JPanel {
 
     private enum IconType { BACK, TARGET, RESELECT, CONFIRM }
 
-    /** 页面按钮使用的轻量矢量图标。 */
-    private static final class SelectorIcon implements Icon {
-        private final IconType type;
-        private final int size;
-        private final Color color;
-
-        private SelectorIcon(IconType type, int size, Color color) {
-            this.type = type;
-            this.size = size;
-            this.color = color;
+    /**
+     * 页面按钮使用的轻量矢量图标。
+     */
+        private record SelectorIcon(IconType type, int size, Color color) implements Icon {
+        /**
+         * 绑定图标用途、逻辑尺寸和颜色。
+         */
+        private SelectorIcon {
         }
 
-        @Override
-        public void paintIcon(Component component, Graphics graphics, int x, int y) {
-            Graphics2D g2 = (Graphics2D) graphics.create();
-            g2.translate(x, y);
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g2.setColor(component.isEnabled() ? color : THEME.textMuted());
-            g2.setStroke(new BasicStroke(1.7f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            int middle = size / 2;
-            switch (type) {
-                case BACK -> {
-                    g2.drawLine(3, middle, size - 2, middle);
-                    g2.drawLine(3, middle, 7, middle - 4);
-                    g2.drawLine(3, middle, 7, middle + 4);
+            /**
+             * 按图标用途绘制窗口选择、返回或确认图形。
+             */
+            @Override
+            public void paintIcon(Component component, Graphics graphics, int x, int y) {
+                Graphics2D g2 = (Graphics2D) graphics.create();
+                g2.translate(x, y);
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(component.isEnabled() ? color : THEME.textMuted());
+                g2.setStroke(new BasicStroke(1.7f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int middle = size / 2;
+                switch (type) {
+                    case BACK -> {
+                        g2.drawLine(3, middle, size - 2, middle);
+                        g2.drawLine(3, middle, 7, middle - 4);
+                        g2.drawLine(3, middle, 7, middle + 4);
+                    }
+                    case TARGET -> {
+                        g2.drawOval(3, 3, size - 7, size - 7);
+                        g2.drawOval(middle - 3, middle - 3, 6, 6);
+                        g2.drawLine(middle, 0, middle, 5);
+                        g2.drawLine(middle, size - 6, middle, size - 1);
+                        g2.drawLine(0, middle, 5, middle);
+                        g2.drawLine(size - 6, middle, size - 1, middle);
+                    }
+                    case RESELECT -> {
+                        g2.drawArc(2, 2, size - 5, size - 5, 35, 285);
+                        g2.drawLine(size - 3, 3, size - 3, 8);
+                        g2.drawLine(size - 3, 3, size - 8, 3);
+                    }
+                    case CONFIRM -> {
+                        g2.drawLine(2, middle, 6, size - 4);
+                        g2.drawLine(6, size - 4, size - 2, 3);
+                    }
                 }
-                case TARGET -> {
-                    g2.drawOval(3, 3, size - 7, size - 7);
-                    g2.drawOval(middle - 3, middle - 3, 6, 6);
-                    g2.drawLine(middle, 0, middle, 5);
-                    g2.drawLine(middle, size - 6, middle, size - 1);
-                    g2.drawLine(0, middle, 5, middle);
-                    g2.drawLine(size - 6, middle, size - 1, middle);
-                }
-                case RESELECT -> {
-                    g2.drawArc(2, 2, size - 5, size - 5, 35, 285);
-                    g2.drawLine(size - 3, 3, size - 3, 8);
-                    g2.drawLine(size - 3, 3, size - 8, 3);
-                }
-                case CONFIRM -> {
-                    g2.drawLine(2, middle, 6, size - 4);
-                    g2.drawLine(6, size - 4, size - 2, 3);
-                }
+                g2.dispose();
             }
-            g2.dispose();
-        }
 
-        @Override
-        public int getIconWidth() {
-            return size;
-        }
+            /**
+             * 返回选择页图标的逻辑宽度。
+             */
+            @Override
+            public int getIconWidth() {
+                return size;
+            }
 
-        @Override
-        public int getIconHeight() {
-            return size;
+            /**
+             * 返回选择页图标的逻辑高度。
+             */
+            @Override
+            public int getIconHeight() {
+                return size;
+            }
         }
-    }
 
     /** 混合两种颜色。 */
     private static Color blend(Color first, Color second, double secondRatio) {

@@ -4,7 +4,7 @@ package com.macro.constant;
 public final class ApplicationInfo {
 
     public static final String APP_NAME = "Macro Recorder";
-    public static final String APP_VERSION = "1.0.0";
+    public static final String APP_VERSION = "1.1.0";
 
     private ApplicationInfo() {
     }

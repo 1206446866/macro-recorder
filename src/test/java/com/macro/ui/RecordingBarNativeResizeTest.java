@@ -57,6 +57,8 @@ public final class RecordingBarNativeResizeTest {
                 frame.setAutoRequestFocus(false);
                 frame.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
                 frame.pack();
+                // 观察层直接接到原 AWT 链；主页自绘层按正式切换流程先卸载。
+                ((WindowsRecordingTitleBar) field("nativeMainTitleBar")).deactivate();
                 hwnd = new HWND(Native.getComponentPointer(frame));
                 awtProc = Pointer.createConstant(User32.INSTANCE.GetWindowLongPtr(hwnd, -4).longValue());
                 observerProc = CallbackReference.getFunctionPointer(observer);
@@ -175,10 +177,10 @@ public final class RecordingBarNativeResizeTest {
             frame.getRootPane().validate(); // 保持根面板在旧宽度有效，模拟尺寸事件未完成布局的状态。
             check(frame.getRootPane().getWidth() < frame.getWidth() - frame.getInsets().left - frame.getInsets().right,
                     "未建立旧尺寸根面板夹具");
-            try (com.sun.jna.Memory position = new com.sun.jna.Memory(Native.POINTER_SIZE * 2 + 24)) {
+            try (com.sun.jna.Memory position = new com.sun.jna.Memory(Native.POINTER_SIZE * 2L + 24)) {
                 position.clear();
                 position.setPointer(0, hwnd.getPointer());
-                position.setInt(Native.POINTER_SIZE * 2 + 16, 0x0001 | 0x0002 | 0x0004 | 0x0010);
+                position.setInt(Native.POINTER_SIZE * 2L + 16, 0x0001 | 0x0002 | 0x0004 | 0x0010);
                 User32.INSTANCE.SendMessage(hwnd, 0x0047, new WPARAM(0), new LPARAM(com.sun.jna.Pointer.nativeValue(position)));
             }
             // 与计时刷新/合并消息共用生产入口，在 EDT 返回前必须完成整个容器树布局。

@@ -13,6 +13,7 @@ import java.awt.RenderingHints;
 /** 深色按钮文字绘制，避免默认禁用文字的浮雕重影。 */
 public class DarkButtonUI extends BasicButtonUI {
 
+    /** 按启用状态绘制按钮文字，使禁用文字仍沿用深色主题的低对比颜色。 */
     @Override
     protected void paintText(Graphics graphics, AbstractButton button,
                              Rectangle textRect, String text) {

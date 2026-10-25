@@ -22,7 +22,13 @@ public final class DarkTheme {
                 new Color(120, 132, 255),    // 强调色悬停
                 new Color(75, 190, 125),     // 成功状态
                 new Color(215, 82, 92),      // 危险操作
-                new Color(230, 94, 104)      // 危险操作悬停
+                new Color(230, 94, 104),     // 危险操作悬停
+                new Color(255, 255, 255),    // 强调底色上的文字和图标
+                new Color(43, 47, 56),       // 普通控件悬停
+                new Color(255, 255, 255),    // 按钮边缘高光
+                new Color(0, 0, 0),          // 按下阴影
+                new Color(50, 100, 245),     // 已播放卡片渐变起点：蓝
+                new Color(98, 209, 238)      // 已播放卡片渐变终点：青
         );
     }
 }

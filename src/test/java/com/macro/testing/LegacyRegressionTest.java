@@ -6,7 +6,6 @@ import com.macro.config.AppConfigSafetyTest;
 import com.macro.player.PlaybackDelayTest;
 import com.macro.player.StopKeyListenerTest;
 import com.macro.recognition.OpenCvPerfectThresholdTest;
-import com.macro.recognition.TemplateMatcherFallbackTest;
 import com.macro.recorder.RecordingControlInputFilterTest;
 import com.macro.recorder.RecordingMouseCoordinatesTest;
 import com.macro.recorder.RecordingPauseTest;
@@ -27,6 +26,76 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /** 为已审查的独立回归检查提供标准入口，不启动其他桌面测试。 */
 class LegacyRegressionTest {
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "弹窗标题栏需要 Windows HWND")
+    void popupTitleBarContract() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "仅构造隐藏弹窗，不发送输入");
+        LegacyMainRunner.run(com.macro.ui.PopupTitleBarContractTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "主页自绘标题栏需要 Windows HWND")
+    void mainTitleBarContract() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "仅创建隐藏窗口及合成原生消息；不发送输入");
+        LegacyMainRunner.run(com.macro.ui.MainTitleBarContractTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "关于设置检查需要隐藏设置窗口")
+    void aboutSettings() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "只构造隐藏设置窗口；不注册按键、不发送输入");
+        LegacyMainRunner.run(com.macro.ui.AboutSettingsTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "非模态动作编辑器需要隐藏窗口夹具")
+    void modelessActionEditor() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "仅构造隐藏编辑器/主窗口，不截图、不发送输入");
+        LegacyMainRunner.run(com.macro.ui.ModelessActionEditorTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "快捷键设置检查需要隐藏设置窗口")
+    void shortcutsSettings() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "只构造隐藏设置窗口；不注册按键、不发送输入");
+        LegacyMainRunner.run(com.macro.ui.ShortcutsSettingsTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "播放进度计数 Robot 需要 Windows 桌面环境")
+    void actualPlaybackProgress() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "构造计数 Robot；不发送真实输入");
+        LegacyMainRunner.run(com.macro.player.PlaybackProgressTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "暂停查看时间线需要隐藏主窗口夹具")
+    void playbackTimelineWindow() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "模拟窗口状态/目标准备；不抢真实前台、不发送输入");
+        LegacyMainRunner.run(com.macro.ui.PlaybackTimelineWindowTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "头部待机设置集成需要 Windows 桌面环境")
+    void standbyHeadSettings() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "构造隐藏主窗口及设置界面；不发送真实输入");
+        LegacyMainRunner.run(com.macro.ui.StandbyHeadSettingsTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "计数 Robot 需要 Windows 桌面环境")
+    void standbyHeadPlayback() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "构造计数 Robot；不发送真实输入");
+        LegacyMainRunner.run(com.macro.player.StandbyHeadPlaybackTest.class, false);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "主窗口恢复检查需要 Windows 桌面环境")
+    void playbackWindowRestore() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless(), "构造隐藏主窗口需要桌面；不发送真实输入");
+        LegacyMainRunner.run(com.macro.ui.PlaybackWindowRestoreTest.class, false);
+    }
+
     @Test
     @EnabledOnOs(value = OS.WINDOWS, disabledReason = "原生改宽检查需要 Windows HWND")
     void recordingBarNativeResize() throws Exception {
@@ -56,11 +125,6 @@ class LegacyRegressionTest {
     void templatePathPlaybackAndEditor() throws Exception {
         assumeFalse(GraphicsEnvironment.isHeadless(), "构造未显示窗口与计数 Robot 需要桌面；不发送真实输入");
         LegacyMainRunner.run(TemplatePathIntegrationTest.Desktop.class, false);
-    }
-
-    @Test
-    void javaFallbackResults() throws Exception {
-        LegacyMainRunner.run(TemplateMatcherFallbackTest.class, true);
     }
 
     @Test

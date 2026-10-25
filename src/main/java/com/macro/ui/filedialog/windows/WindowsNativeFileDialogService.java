@@ -61,6 +61,7 @@ public final class WindowsNativeFileDialogService implements FileDialogService {
     private static final int SET_DEFAULT_EXTENSION = 22;
     private static final int SHELL_ITEM_GET_DISPLAY_NAME = 5;
 
+    /** 在 Swing 事件线程打开 Windows 原生文件面板；后台调用转交事件线程并等待所选结果。 */
     @Override
     public Optional<File> showDialog(Component parent, FileDialogOptions options) throws FileDialogException {
         Objects.requireNonNull(options, "文件面板配置不能为空");
@@ -97,6 +98,7 @@ public final class WindowsNativeFileDialogService implements FileDialogService {
         return awaitResult(result);
     }
 
+    /** 等待文件面板返回并保留明确的原生异常，其他失败统一包装为文件面板异常。 */
     private Optional<File> awaitResult(CompletableFuture<Optional<File>> result) throws FileDialogException {
         try {
             return result.join();
@@ -137,6 +139,7 @@ public final class WindowsNativeFileDialogService implements FileDialogService {
         }
     }
 
+    /** 按用途设置原生面板选项、初始位置和文件类型，并返回需保持存活的筛选结构。 */
     private FilterSpec[] configure(ComObject dialog, FileDialogOptions options) throws FileDialogException {
         IntByReference currentOptions = new IntByReference();
         requireSuccess(dialog.call(GET_OPTIONS, currentOptions), "IFileDialog::GetOptions");
@@ -183,6 +186,7 @@ public final class WindowsNativeFileDialogService implements FileDialogService {
         return filters;
     }
 
+    /** 从原生选择项取得文件系统路径，读取完成后释放选择项接口和系统分配的路径内存。 */
     private File readResult(ComObject dialog) throws FileDialogException {
         PointerByReference reference = new PointerByReference();
         requireSuccess(dialog.call(GET_RESULT, reference), "IFileDialog::GetResult");
@@ -200,30 +204,37 @@ public final class WindowsNativeFileDialogService implements FileDialogService {
         }
     }
 
+    /** 检查 HRESULT，失败时在异常中保留原生操作名和十六进制错误码。 */
     private static void requireSuccess(int status, String operation) throws FileDialogException {
         if (status < 0) throw new FileDialogException(operation + "失败，HRESULT=" + String.format("0x%08X", status));
     }
 
     /** IUnknown、IModalWindow、IFileDialog 的标准虚函数表调用均封装在平台实现内。 */
     private static final class ComObject extends Unknown implements AutoCloseable {
+        /** 保存非空 COM 接口指针，后续原生方法调用及引用释放都使用该指针。 */
         private ComObject(Pointer pointer) { super(Objects.requireNonNull(pointer, "COM 接口指针为空")); }
+        /** 把当前接口指针放在首个参数，按虚表索引调用 COM 方法并返回 HRESULT。 */
         private int call(int index, Object... parameters) {
             Object[] arguments = new Object[parameters.length + 1];
             arguments[0] = getPointer();
             System.arraycopy(parameters, 0, arguments, 1, parameters.length);
             return _invokeNativeInt(index, arguments);
         }
+        /** 释放本次持有的 COM 接口引用，交还原生资源。 */
         @Override public void close() { Release(); }
     }
 
+    /** 按 Windows 原生布局保存文件类型显示名称和匹配模式。 */
     @Structure.FieldOrder({"name", "pattern"})
     public static final class FilterSpec extends Structure {
         public WString name;
         public WString pattern;
     }
 
+    /** 声明将初始文件路径转换为 Shell 选择项所需的原生接口。 */
     private interface ShellApi extends StdCallLibrary {
         ShellApi INSTANCE = Native.load("shell32", ShellApi.class);
+        /** 从给定路径创建指定接口类型的 Shell 项，由调用方负责释放返回引用。 */
         HRESULT SHCreateItemFromParsingName(WString path, Pointer bindingContext,
                 Guid.REFIID interfaceId, PointerByReference result);
     }

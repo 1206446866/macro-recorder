@@ -14,10 +14,12 @@ import com.macro.model.KeySide;
 import com.macro.model.MacroAction;
 import com.macro.model.MouseButton;
 import com.macro.ui.dialog.AppMessageDialog;
+import com.macro.ui.dialog.ImageRecognitionFrame;
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
 import com.macro.ui.util.ComponentStyleUtil;
 import com.macro.ui.util.NumericInputUtil;
+import com.macro.ui.window.WindowTitleBarSupport;
 import com.macro.util.ImageTemplatePathUtil;
 
 import javax.imageio.ImageIO;
@@ -47,6 +49,19 @@ import java.util.function.Consumer;
  * 图像识别配置不会写入 {@link ActionType} 或 {@link MacroAction}。</p>
  */
 public final class ActionEditorDialog extends JDialog {
+    private final WindowTitleBarSupport titleBarSupport;
+
+    /** 创建原生窗口后安装统一标题栏，保留非模态编辑器及现有表单。 */
+    @Override public void addNotify() {
+        super.addNotify();
+        if (titleBarSupport != null) titleBarSupport.activate();
+    }
+
+    /** 销毁窗口前恢复原 AWT 过程，业务关闭清理由现有 dispose 执行。 */
+    @Override public void removeNotify() {
+        try { if (titleBarSupport != null) titleBarSupport.deactivate(); }
+        finally { super.removeNotify(); }
+    }
 
     /** 流程节点编辑器的创建或编辑模式。 */
     public enum Mode {
@@ -116,11 +131,31 @@ public final class ActionEditorDialog extends JDialog {
     private JCheckBox preserveDelayCheckBox;
     private PropertyPanel currentPropertyPanel;
     private List<MacroNode> availableBranchTargets = List.of();
+    private final JLabel nodeNumberLabel = new JLabel("新节点");
+    private ImageRecognitionFrame imageRecognitionFrame;
+    private boolean closed;
 
     /** 从当前时间线注入节点选项；不向用户暴露需要手输的节点 ID。 */
     public void setAvailableBranchTargets(List<MacroNode> nodes) {
         availableBranchTargets = List.copyOf(nodes);
+        String number = sourceNode == null ? null : TimelineNodeNumbers.labels(nodes).get(sourceNode.getId());
+        nodeNumberLabel.setText(sourceNode == null ? "新节点" : number == null ? "节点 —" : "节点 " + number);
         if (currentPropertyPanel instanceof ImageCheckPanel image) image.refreshTargets();
+    }
+
+    /** 非模态期间删除/换宏后，旧节点编辑器不能再写回。 */
+    boolean canKeepEditing(List<MacroNode> nodes, boolean sameFlow) {
+        return sourceNode == null ? sameFlow : nodes.stream().anyMatch(node -> node == sourceNode);
+    }
+
+    /** 标记编辑器已关闭，先释放自身，再取消并释放所属识别窗口，使旧保存和删除入口失效。 */
+    @Override
+    public void dispose() {
+        closed = true;
+        ImageRecognitionFrame recognition = imageRecognitionFrame;
+        imageRecognitionFrame = null;
+        super.dispose();
+        if (recognition != null) recognition.dispose();
     }
 
     /**
@@ -137,6 +172,7 @@ public final class ActionEditorDialog extends JDialog {
         return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null);
     }
 
+    /** 创建使用当前 MR 目录解析模板路径的非模态插入窗口，保存结果仍交由时间线回调处理。 */
     public static ActionEditorDialog create(Window owner, File macroDirectory, Consumer<MacroNode> onSave) {
         return new ActionEditorDialog(owner, Mode.CREATE, null, onSave, null,
                 FileDialogServiceFactory.create(), macroDirectory);
@@ -165,12 +201,14 @@ public final class ActionEditorDialog extends JDialog {
         return new ActionEditorDialog(owner, Mode.EDIT, node, onSave, onDelete);
     }
 
+    /** 创建使用当前 MR 目录的节点编辑窗口，保留原节点身份及保存、删除回调。 */
     public static ActionEditorDialog edit(Window owner, MacroNode node, File macroDirectory,
             Consumer<MacroNode> onSave, Consumer<Boolean> onDelete) {
         return new ActionEditorDialog(owner, Mode.EDIT, node, onSave, onDelete,
                 FileDialogServiceFactory.create(), macroDirectory);
     }
 
+    /** 创建非模态节点编辑器，绑定原节点、文件面板和结果回调，并按初始类型装配属性表单。 */
     private ActionEditorDialog(
             Window owner,
             Mode mode,
@@ -181,16 +219,18 @@ public final class ActionEditorDialog extends JDialog {
         this(owner, mode, sourceNode, onSave, onDelete, FileDialogServiceFactory.create());
     }
 
+    /** 创建非模态节点编辑器，绑定原节点、文件面板和结果回调，并按初始类型装配属性表单。 */
     private ActionEditorDialog(Window owner, Mode mode, MacroNode sourceNode,
             Consumer<MacroNode> onSave, Consumer<Boolean> onDelete, FileDialogService fileDialogs) {
         this(owner, mode, sourceNode, onSave, onDelete, fileDialogs, null);
     }
 
+    /** 创建非模态节点编辑器，绑定原节点、文件面板和结果回调，并按初始类型装配属性表单。 */
     private ActionEditorDialog(Window owner, Mode mode, MacroNode sourceNode,
             Consumer<MacroNode> onSave, Consumer<Boolean> onDelete, FileDialogService fileDialogs,
             File templateBaseDirectory) {
         super(owner, mode == Mode.CREATE ? "插入动作" : "编辑动作",
-                ModalityType.APPLICATION_MODAL);
+                ModalityType.MODELESS);
 
         if (onSave == null) {
             throw new IllegalArgumentException("动作保存回调不能为空");
@@ -203,6 +243,7 @@ public final class ActionEditorDialog extends JDialog {
         this.fileDialogs = java.util.Objects.requireNonNull(fileDialogs);
         this.templateBaseDirectory = templateBaseDirectory;
         this.sourceNode = sourceNode;
+        nodeNumberLabel.setText(sourceNode == null ? "新节点" : "节点 —");
         this.onSave = onSave;
         this.onDelete = onDelete;
 
@@ -218,6 +259,7 @@ public final class ActionEditorDialog extends JDialog {
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
         setContentPane(createContent(initialType));
+        titleBarSupport = new WindowTitleBarSupport(this);
         actionTypeCombo.addActionListener(event -> changeActionType(
                 (EditorType) actionTypeCombo.getSelectedItem()
         ));
@@ -251,6 +293,15 @@ public final class ActionEditorDialog extends JDialog {
         heading.add(Box.createVerticalStrut(6));
         heading.add(subtitleLabel);
 
+        nodeNumberLabel.setFont(FONT_BOLD);
+        nodeNumberLabel.setForeground(PALETTE.accent());
+        nodeNumberLabel.setVerticalAlignment(SwingConstants.TOP);
+        nodeNumberLabel.setBorder(new EmptyBorder(4, 10, 4, 0));
+        JPanel header = new JPanel(new BorderLayout());
+        header.setOpaque(false);
+        header.add(heading, BorderLayout.CENTER);
+        header.add(nodeNumberLabel, BorderLayout.EAST);
+
         RoundedPanel formCard = new RoundedPanel(new BorderLayout());
         formCard.setBorder(new EmptyBorder(14, 14, 14, 14));
         formCard.add(propertyHost, BorderLayout.CENTER);
@@ -258,7 +309,7 @@ public final class ActionEditorDialog extends JDialog {
         showPropertyPanel(initialType, sourceNode);
 
         JPanel footer = createFooter();
-        root.add(heading, BorderLayout.NORTH);
+        root.add(header, BorderLayout.NORTH);
         root.add(formCard, BorderLayout.CENTER);
         root.add(footer, BorderLayout.SOUTH);
         return root;
@@ -301,6 +352,10 @@ public final class ActionEditorDialog extends JDialog {
         if (type == null) {
             return;
         }
+        if (imageRecognitionFrame != null) {
+            imageRecognitionFrame.dispose();
+            imageRecognitionFrame = null;
+        }
         subtitleLabel.setText(getEditorTypeName(type));
         delayField.setText(type == EditorType.IMAGE_CHECK ? "1000" : "0");
         showPropertyPanel(type, null);
@@ -338,6 +393,7 @@ public final class ActionEditorDialog extends JDialog {
 
     /** 校验表单并创建新的流程节点交回时间线。 */
     private void saveAction() {
+        if (closed) return;
         try {
             long delay = parseDelay();
             MacroNode result;
@@ -370,6 +426,7 @@ public final class ActionEditorDialog extends JDialog {
         return NumericInputUtil.readLong(delayField);
     }
 
+    /** 普通动作取原动作延迟，图像节点取重试等待时间，新节点使用零。 */
     private long getInitialDelay(MacroNode node) {
         if (node == null) {
             return 0L;
@@ -382,12 +439,13 @@ public final class ActionEditorDialog extends JDialog {
 
     /** 确认删除当前流程节点。 */
     private void deleteAction() {
+        if (closed) return;
         boolean confirmed = AppMessageDialog.showConfirm(
                 this,
                 "删除动作",
                 "确定删除这个动作吗？"
         );
-        if (!confirmed) {
+        if (!confirmed || closed) {
             return;
         }
         if (onDelete == null) {
@@ -507,7 +565,7 @@ public final class ActionEditorDialog extends JDialog {
     private JButton createButton(String text, boolean primary) {
         JButton button = new JButton(text);
         button.setFont(FONT_BOLD);
-        button.setForeground(PALETTE.textPrimary());
+        button.setForeground(primary ? PALETTE.textOnAccent() : PALETTE.textPrimary());
         Color background = primary ? PALETTE.accent() : PALETTE.controlBackground();
         Color hover = primary ? PALETTE.accentHover() : PALETTE.targetCard();
         button.setBackground(background);
@@ -533,6 +591,7 @@ public final class ActionEditorDialog extends JDialog {
         };
     }
 
+    /** 将编辑器类型转换为界面展示名称，不改变宏动作或流程节点类型。 */
     private static String getEditorTypeName(EditorType type) {
         if (type == EditorType.IMAGE_CHECK) {
             return "图像识别";
@@ -622,26 +681,23 @@ public final class ActionEditorDialog extends JDialog {
 
         normalized = switch (normalized) {
             case "制表符" -> "TAB";
-            case "回车", "返回" -> "ENTER";
-            case "空格" -> "SPACE";
-            case "退格" -> "BACK_SPACE";
+            case "回车", "返回", "RETURN" -> "ENTER";
+            case "空格", "SPACEBAR" -> "SPACE";
+            case "退格", "BACKSPACE" -> "BACK_SPACE";
             case "删除" -> "DELETE";
             case "上" -> "UP";
             case "下" -> "DOWN";
             case "左" -> "LEFT";
             case "右" -> "RIGHT";
             case "ESC" -> "ESCAPE";
-            case "RETURN" -> "ENTER";
             case "CTRL" -> "CONTROL";
             case "WIN", "WINDOW", "WINDOWS_KEY", "META" -> "WINDOWS";
-            case "BACKSPACE" -> "BACK_SPACE";
             case "PRINT_SCREEN" -> "PRINTSCREEN";
             case "PAGEUP", "PGUP" -> "PAGE_UP";
             case "PAGEDOWN", "PGDN" -> "PAGE_DOWN";
             case "CAPSLOCK" -> "CAPS_LOCK";
             case "NUMLOCK" -> "NUM_LOCK";
             case "SCROLLLOCK" -> "SCROLL_LOCK";
-            case "SPACEBAR" -> "SPACE";
             default -> normalized;
         };
 
@@ -678,10 +734,12 @@ public final class ActionEditorDialog extends JDialog {
 
         private int propertyCount;
 
+        /** 建立左右两栏公共表单，复用动作类型和延迟字段，并预留属性行。 */
         private PropertyPanel() {
             this("动作延迟");
         }
 
+        /** 建立左右两栏公共表单，复用动作类型和延迟字段，并预留属性行。 */
         private PropertyPanel(String delayLabel) {
             setOpaque(false);
             setLayout(new GridBagLayout());
@@ -711,6 +769,7 @@ public final class ActionEditorDialog extends JDialog {
             add(Box.createVerticalGlue(), fillerConstraints);
         }
 
+        /** 把下一个属性按既定顺序加入左右两栏，沿用公共表单间距。 */
         protected void addProperty(String name, JComponent component) {
             int column = propertyCount % 2 == 0 ? 0 : 2;
             int row = propertyCount / 2 + 1;
@@ -730,8 +789,10 @@ public final class ActionEditorDialog extends JDialog {
             add(rowPanel, constraints);
         }
 
+        /** 将已有普通动作的参数装入当前属性表单，空动作使用该面板的默认值。 */
         protected abstract void load(MacroAction action);
 
+        /** 校验当前表单并创建带指定延迟的普通输入动作，由具体面板决定动作类型。 */
         protected abstract MacroAction createAction(long delay);
     }
 
@@ -740,6 +801,7 @@ public final class ActionEditorDialog extends JDialog {
 
         /** 显示并选择模板 PNG 的入口按钮。 */
         private final JButton templateButton = createButton("选择模板 PNG", false);
+        private final JButton recognizeButton = createButton("识别", false);
 
         /** 以百分数编辑匹配阈值，保存时换算为 0 到 1。 */
         private final JSpinner thresholdSpinner = new JSpinner(
@@ -755,6 +817,7 @@ public final class ActionEditorDialog extends JDialog {
         private final JComboBox<BranchTarget> successTarget = createTargetCombo("successTarget");
         private final JComboBox<BranchTarget> failureTarget = createTargetCombo("failureTarget");
 
+        /** 创建带稳定控件名称和公共深色样式的目标节点下拉框。 */
         private JComboBox<BranchTarget> createTargetCombo(String name) {
             JComboBox<BranchTarget> combo = new JComboBox<>();
             combo.setName(name);
@@ -764,12 +827,14 @@ public final class ActionEditorDialog extends JDialog {
             return combo;
         }
 
+        /** 刷新成功和失败目标列表，并按各自分支行为独立更新启用状态。 */
         private void refreshTargets() {
             fillTargets(successTarget, BranchCondition.FOUND);
             fillTargets(failureTarget, BranchCondition.NOT_FOUND);
             updateTargetEnabled();
         }
 
+        /** 按当前时间线编号生成目标选项，保留已选 ID；目标失效时显示需重新选择的占位项。 */
         private void fillTargets(JComboBox<BranchTarget> combo, BranchCondition condition) {
             BranchTarget old = (BranchTarget) combo.getSelectedItem();
             MacroBranch branch = sourceNode == null ? null : MacroFlowFactory.branchFor(sourceNode, condition);
@@ -777,8 +842,7 @@ public final class ActionEditorDialog extends JDialog {
             combo.removeAllItems();
             BranchTarget selection = null;
             var numbers = TimelineNodeNumbers.labels(availableBranchTargets);
-            for (int i = 0; i < availableBranchTargets.size(); i++) {
-                MacroNode target = availableBranchTargets.get(i);
+            for (MacroNode target : availableBranchTargets) {
                 if (target.getType() == NodeType.END || target.getId() == null
                         || sourceNode != null && target.getId().equals(sourceNode.getId())) continue;
                 BranchTarget option = new BranchTarget(target.getId(), numbers.get(target.getId()) + " · "
@@ -794,11 +858,13 @@ public final class ActionEditorDialog extends JDialog {
             if (selection != null) combo.setSelectedItem(selection);
         }
 
+        /** 仅当对应分支选择指定跳转时启用其目标下拉框，成功和失败互不影响。 */
         private void updateTargetEnabled() {
             successTarget.setEnabled(successBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
             failureTarget.setEnabled(failureBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
         }
 
+        /** 指定跳转必须返回有效节点 ID，其他行为返回空目标，保留默认后继、重试与终止的独立语义。 */
         private String selectedTarget(JComboBox<BranchTarget> combo, ImageCheckBehavior behavior) {
             if (behavior != ImageCheckBehavior.JUMP) return null;
             BranchTarget target = (BranchTarget) combo.getSelectedItem();
@@ -806,6 +872,7 @@ public final class ActionEditorDialog extends JDialog {
             return target.id();
         }
 
+        /** 创建使用公共主题和行为名称渲染的分支行为选择框。 */
         private JComboBox<ImageCheckBehavior> createBehaviorCombo() {
             JComboBox<ImageCheckBehavior> combo = new JComboBox<>(ImageCheckBehavior.values());
             combo.setFont(FONT_NORMAL);
@@ -815,12 +882,20 @@ public final class ActionEditorDialog extends JDialog {
             return combo;
         }
 
+        /** 组装模板、识别预览、阈值和成功失败分支控件，识别配置不进入 MacroAction。 */
         private ImageCheckPanel() {
             super("重试延迟");
             ComponentStyleUtil.styleSpinner(thresholdSpinner);
             NumericInputUtil.installSpinner(thresholdSpinner, "图像匹配阈值（%）");
             templateButton.addActionListener(event -> chooseTemplateImage());
-            addProperty("模板 PNG", templateButton);
+            recognizeButton.setEnabled(false);
+            recognizeButton.setToolTipText("使用当前模板测试屏幕识别");
+            recognizeButton.addActionListener(event -> openRecognitionTest());
+            JPanel templateControls = new JPanel(new BorderLayout(6, 0));
+            templateControls.setOpaque(false);
+            templateControls.add(templateButton, BorderLayout.CENTER);
+            templateControls.add(recognizeButton, BorderLayout.EAST);
+            addProperty("模板 PNG", templateControls);
             addProperty("匹配阈值", thresholdSpinner);
             addProperty("成功行为", successBehavior);
             addProperty("失败行为", failureBehavior);
@@ -831,6 +906,7 @@ public final class ActionEditorDialog extends JDialog {
             refreshTargets();
         }
 
+        /** 载入图像分支行为、模板路径和阈值；缺少配置时恢复新图像节点的默认选择。 */
         private void loadConfig(ImageCheckConfig config) {
             successBehavior.setSelectedItem(config == null
                     ? ImageCheckBehavior.EXECUTE : config.getSuccessBehavior());
@@ -842,11 +918,13 @@ public final class ActionEditorDialog extends JDialog {
                 templateButton.setText("选择模板 PNG");
                 templateButton.setToolTipText(null);
                 thresholdSpinner.setValue(90);
+                recognizeButton.setEnabled(false);
                 return;
             }
             templateFile = ImageTemplatePathUtil.resolve(config.getImagePath(), templateBaseDirectory).toFile();
             templateButton.setText(templateFile.getName());
             templateButton.setToolTipText(templateFile.getAbsolutePath());
+            recognizeButton.setEnabled(true);
             int thresholdPercent = (int) Math.round(
                     config.getThreshold() * 100.0
             );
@@ -856,6 +934,7 @@ public final class ActionEditorDialog extends JDialog {
             ));
         }
 
+        /** 通过现有文件面板选择并验证 PNG，确认后仅更新当前编辑器的未保存模板。 */
         private void chooseTemplateImage() {
             File selected;
             try {
@@ -891,8 +970,33 @@ public final class ActionEditorDialog extends JDialog {
             templateFile = selected.getAbsoluteFile();
             templateButton.setText(templateFile.getName());
             templateButton.setToolTipText(templateFile.getAbsolutePath());
+            recognizeButton.setEnabled(true);
         }
 
+        /** 使用当前尚未保存的模板与阈值，不修改节点，也不自动开始截图。 */
+        private void openRecognitionTest() {
+            if (closed || templateFile == null) return;
+            try {
+                ImageRecognitionFrame preview = prepareRecognitionTest();
+                preview.setVisible(true);
+                preview.toFront();
+            } catch (java.io.IOException | IllegalArgumentException exception) {
+                AppMessageDialog.showError(ActionEditorDialog.this, "无法加载当前识别模板", exception);
+            }
+        }
+
+        /** 复用或创建识别预览窗口，载入当前未保存的模板及阈值，不自动识别也不写回宏。 */
+        private ImageRecognitionFrame prepareRecognitionTest() throws java.io.IOException {
+            int threshold = NumericInputUtil.commitSpinnerInt(thresholdSpinner);
+            if (imageRecognitionFrame == null || !imageRecognitionFrame.isDisplayable()) {
+                imageRecognitionFrame = new ImageRecognitionFrame(ActionEditorDialog.this,
+                        () -> templateFile == null ? templateBaseDirectory : templateFile.getParentFile());
+            }
+            imageRecognitionFrame.setTemplate(templateFile, threshold / 100.0);
+            return imageRecognitionFrame;
+        }
+
+        /** 校验模板、阈值和指定跳转目标，组装独立图像配置及成功失败分支，节点 ID 留给时间线分配。 */
         private MacroNode createImageNode(long retryDelay) {
             if (templateFile == null) {
                 throw new IllegalArgumentException("请选择模板 PNG");
@@ -925,11 +1029,13 @@ public final class ActionEditorDialog extends JDialog {
             );
         }
 
+        /** 图像节点不从普通输入动作读取配置，图像参数由专用加载入口处理。 */
         @Override
         protected void load(MacroAction action) {
             // 图像识别不使用 MacroAction。
         }
 
+        /** 拒绝把图像检查创建为普通键鼠动作，避免混淆两种节点模型。 */
         @Override
         protected MacroAction createAction(long delay) {
             throw new UnsupportedOperationException("图像识别不创建 MacroAction");
@@ -937,6 +1043,7 @@ public final class ActionEditorDialog extends JDialog {
     }
 
     private record BranchTarget(String id, String label, boolean available) {
+        /** 显示带编号的目标名称，实际分支引用仍使用单独保存的节点 ID。 */
         @Override public String toString() { return label; }
     }
 
@@ -946,11 +1053,13 @@ public final class ActionEditorDialog extends JDialog {
         protected final JTextField xField = createIntegerField("0", "X 坐标");
         protected final JTextField yField = createIntegerField("0", "Y 坐标");
 
+        /** 加入 X、Y 整数字段，供鼠标移动、按钮和滚轮属性复用。 */
         private CoordinatePanel() {
             addProperty("X 坐标", xField);
             addProperty("Y 坐标", yField);
         }
 
+        /** 载入动作坐标，没有原动作时把两个坐标初始化为零。 */
         protected void loadCoordinates(MacroAction action) {
             if (action == null) {
                 xField.setText("0");
@@ -961,10 +1070,12 @@ public final class ActionEditorDialog extends JDialog {
             yField.setText(String.valueOf(action.getY()));
         }
 
+        /** 按已安装规则读取 X 坐标，拒绝未完成或溢出的整数输入。 */
         protected int getXValue() {
             return NumericInputUtil.readInt(xField);
         }
 
+        /** 按已安装规则读取 Y 坐标，拒绝未完成或溢出的整数输入。 */
         protected int getYValue() {
             return NumericInputUtil.readInt(yField);
         }
@@ -973,11 +1084,13 @@ public final class ActionEditorDialog extends JDialog {
     /** 鼠标移动属性面板。 */
     private final class MouseMovePanel extends CoordinatePanel {
 
+        /** 将已有移动动作的坐标载入当前字段。 */
         @Override
         protected void load(MacroAction action) {
             loadCoordinates(action);
         }
 
+        /** 读取已校验的坐标并创建指定延迟的鼠标移动动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             return MacroAction.mouseMove(getXValue(), getYValue(), delay);
@@ -990,10 +1103,12 @@ public final class ActionEditorDialog extends JDialog {
         protected final JComboBox<MouseButton> mouseButtonCombo =
                 createMouseButtonComboBox();
 
+        /** 在公共坐标字段后加入受支持鼠标按钮选择。 */
         private MouseButtonPanel() {
             addProperty("鼠标按键", mouseButtonCombo);
         }
 
+        /** 载入坐标和按钮；旧数据含未支持侧键时保留未选择状态，要求重新选择。 */
         @Override
         protected void load(MacroAction action) {
             loadCoordinates(action);
@@ -1008,6 +1123,7 @@ public final class ActionEditorDialog extends JDialog {
             );
         }
 
+        /** 返回当前支持的鼠标按钮，未选择或侧键数据明确拒绝。 */
         protected MouseButton getMouseButton() {
             MouseButton button = (MouseButton) mouseButtonCombo.getSelectedItem();
             if (button == null) {
@@ -1023,6 +1139,7 @@ public final class ActionEditorDialog extends JDialog {
     /** 鼠标按下属性面板。 */
     private final class MousePressPanel extends MouseButtonPanel {
 
+        /** 读取坐标与受支持按钮，创建鼠标按下动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             return MacroAction.mousePress(
@@ -1037,6 +1154,7 @@ public final class ActionEditorDialog extends JDialog {
     /** 鼠标释放属性面板。 */
     private final class MouseReleasePanel extends MouseButtonPanel {
 
+        /** 读取坐标与受支持按钮，创建鼠标释放动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             return MacroAction.mouseRelease(
@@ -1053,10 +1171,12 @@ public final class ActionEditorDialog extends JDialog {
 
         private final JTextField wheelAmountField = createIntegerField("1", "滚轮量");
 
+        /** 在公共坐标字段后加入滚动幅度输入。 */
         private MouseWheelPanel() {
             addProperty("滚轮量", wheelAmountField);
         }
 
+        /** 载入滚轮动作的坐标和滚动值，新动作沿用默认幅度。 */
         @Override
         protected void load(MacroAction action) {
             loadCoordinates(action);
@@ -1065,6 +1185,7 @@ public final class ActionEditorDialog extends JDialog {
             ));
         }
 
+        /** 校验坐标与滚动幅度后创建滚轮动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             return MacroAction.mouseWheel(
@@ -1085,24 +1206,29 @@ public final class ActionEditorDialog extends JDialog {
         );
         protected KeySide keySide = KeySide.NONE;
 
+        /** 建立可编辑按键名称和只读代码预览，并安装名称变化同步。 */
         private KeyboardPanel() {
             installKeyNameSync();
             addProperty("按键名称", keyField);
             addProperty("按键代码", keyCodeField);
         }
 
+        /** 监听按键名称文本变化，及时更新只读按键代码预览。 */
         private void installKeyNameSync() {
             keyField.getDocument().addDocumentListener(new DocumentListener() {
+                /** 按键名称新增字符后重新解析代码预览。 */
                 @Override
                 public void insertUpdate(DocumentEvent event) {
                     updateKeyCodePreview();
                 }
 
+                /** 按键名称删除字符后重新解析代码预览。 */
                 @Override
                 public void removeUpdate(DocumentEvent event) {
                     updateKeyCodePreview();
                 }
 
+                /** 按键名称文档变化后同步代码预览。 */
                 @Override
                 public void changedUpdate(DocumentEvent event) {
                     updateKeyCodePreview();
@@ -1110,6 +1236,7 @@ public final class ActionEditorDialog extends JDialog {
             });
         }
 
+        /** 尝试解析当前按键名称，输入尚无效时只调整预览，不弹出校验提示。 */
         private void updateKeyCodePreview() {
             try {
                 keyCodeField.setText(String.valueOf(resolveKeyCode(keyField.getText())));
@@ -1118,6 +1245,7 @@ public final class ActionEditorDialog extends JDialog {
             }
         }
 
+        /** 载入按键名称、代码和左右键位置；新动作使用 A 键默认值。 */
         @Override
         protected void load(MacroAction action) {
             if (action == null) {
@@ -1131,6 +1259,7 @@ public final class ActionEditorDialog extends JDialog {
             keyCodeField.setText(String.valueOf(action.getKeyCode()));
         }
 
+        /** 校验并返回去除首尾空白的按键名称，同时同步代码字段。 */
         protected String getKeyName() {
             String keyName = keyField.getText().trim();
             int keyCode = resolveKeyCode(keyName);
@@ -1138,6 +1267,7 @@ public final class ActionEditorDialog extends JDialog {
             return keyName;
         }
 
+        /** 按公共名称解析规则取得当前按键代码，非法名称继续交由保存入口反馈。 */
         protected int getKeyCode() {
             return resolveKeyCode(keyField.getText());
         }
@@ -1146,6 +1276,7 @@ public final class ActionEditorDialog extends JDialog {
     /** 键盘按下属性面板。 */
     private final class KeyPressPanel extends KeyboardPanel {
 
+        /** 保留左右键位置，按校验后的名称和代码创建键盘按下动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             String keyName = getKeyName();
@@ -1156,6 +1287,7 @@ public final class ActionEditorDialog extends JDialog {
     /** 键盘释放属性面板。 */
     private final class KeyReleasePanel extends KeyboardPanel {
 
+        /** 保留左右键位置，按校验后的名称和代码创建键盘释放动作。 */
         @Override
         protected MacroAction createAction(long delay) {
             String keyName = getKeyName();
@@ -1166,11 +1298,13 @@ public final class ActionEditorDialog extends JDialog {
     /** 深色圆角卡片。 */
     private static final class RoundedPanel extends JPanel {
 
+        /** 用指定布局创建属性卡片，背景由主题圆角绘制负责。 */
         private RoundedPanel(LayoutManager layout) {
             super(layout);
             setOpaque(false);
         }
 
+        /** 绘制编辑表单的圆角主题背景及边框，再绘制面板内容。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -1191,11 +1325,13 @@ public final class ActionEditorDialog extends JDialog {
         private final Color background;
         private final Color hover;
 
+        /** 保存编辑器按钮的常规和悬停背景颜色。 */
         private RoundedButtonUI(Color background, Color hover) {
             this.background = background;
             this.hover = hover;
         }
 
+        /** 根据按钮交互状态绘制圆角背景和边框，再沿用按钮内容绘制。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;

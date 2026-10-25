@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 
 
+/** 保存和加载 MR 宏文件，统一校验动作、流程节点与分支引用，并用临时文件保护原有保存内容。 */
 public class MacroStorage {
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -30,7 +31,7 @@ public class MacroStorage {
 
     /**
      * 保存 MR 文件。
-     *
+     * <p>
      * 先写入同目录下的临时文件，成功后再替换正式文件，
      * 避免写入失败时直接破坏原有文件。
      *
@@ -117,8 +118,8 @@ public class MacroStorage {
             try {
                 Files.deleteIfExists(tempPath);
             } catch (Exception e) {
-                System.err.println("清理宏文件临时文件失败：" + tempPath);
-                e.printStackTrace();
+                System.getLogger(MacroStorage.class.getName()).log(
+                        System.Logger.Level.WARNING, "清理宏文件临时文件失败：" + tempPath, e);
             }
         }
     }
@@ -226,6 +227,7 @@ public class MacroStorage {
 
     /** 校验 MR 中流程入口、节点引用、动作数据和图像识别配置。 */
     private void validateFlow(MacroFlow flow) {
+        MacroFlowFactory.validateHeadWait(flow);
         if (flow.getStartId() == null || flow.getStartId().isBlank()) {
             throw new IllegalArgumentException("MR 流程缺少 startId");
         }
@@ -264,6 +266,7 @@ public class MacroStorage {
         MacroFlowFactory.validateImageJumps(flow);
     }
 
+    /** 检查图像节点的路径、阈值、行为与重试参数；结构校验不要求模板图片此刻存在。 */
     private void validateImageCheck(MacroNode node) {
         ImageCheckConfig config = node.getImageCheckConfig();
         if (config == null || config.getImagePath() == null
@@ -314,6 +317,7 @@ public class MacroStorage {
         }
     }
 
+    /** 拒绝当前未支持的鼠标侧键按下和释放动作，并在错误中保留调用方提供的上下文。 */
     private void validateSupportedMouseButton(MacroAction action, String prefix) {
         if (action != null && (action.getType() == ActionType.MOUSE_PRESS || action.getType() == ActionType.MOUSE_RELEASE)
                 && action.getMouseButton() != null && !action.getMouseButton().isSupported()) {

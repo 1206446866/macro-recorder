@@ -10,6 +10,7 @@ public class RoundedPanel extends JPanel {
     private final Color borderColor;
     private final int radius;
 
+    /** 使用指定背景、边框颜色和圆角半径建立面板，内容布局仍交由 Swing 容器管理。 */
     public RoundedPanel(Color background, Color borderColor, int radius) {
         this.background = background;
         this.borderColor = borderColor;
@@ -17,6 +18,7 @@ public class RoundedPanel extends JPanel {
         setOpaque(false);
     }
 
+    /** 在绘制子组件前绘制主题圆角背景与边框，使用独立图形副本避免影响后续绘制。 */
     @Override
     protected void paintComponent(Graphics graphics) {
         Graphics2D g2 = (Graphics2D) graphics.create();

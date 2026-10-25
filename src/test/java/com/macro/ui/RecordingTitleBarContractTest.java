@@ -150,7 +150,7 @@ public final class RecordingTitleBarContractTest {
                         && rect.getInt(8) - rect.getInt(0) >= minimumWidth, "WM_SIZING 没有保护固定高度和最小宽度");
             }
         }
-        try (Memory pos = new Memory(Native.POINTER_SIZE * 2 + 24)) {
+        try (Memory pos = new Memory(Native.POINTER_SIZE * 2L + 24)) {
             pos.clear();
             pos.setPointer(0, hwnd.getPointer());
             int offset = Native.POINTER_SIZE * 2;

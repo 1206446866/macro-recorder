@@ -35,7 +35,7 @@ public final class RecordingControlBarUiTest {
     private static final int SC_RESTORE = 0xF120;
     private static final int SC_CLOSE = 0xF060;
 
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         int exitCode = 0;
         try { runTests(); }
         catch (Throwable failure) { failure.printStackTrace(); exitCode = 1; }
@@ -116,9 +116,7 @@ public final class RecordingControlBarUiTest {
                         "暂停后继续按钮没有切换为播放图标");
             });
             captureCaptionForInspection("recording-native-caption-paused.png");
-            edt(() -> {
-                button("recordingBarCaptureButton").doClick();
-            });
+            edt(() -> button("recordingBarCaptureButton").doClick());
             await(() -> captureOverlay() != null, "截图选区未打开");
             edt(() -> {
                 check(!frame.isVisible() && !extra.isVisible(), "截图前没有隐藏所有可见应用窗口");

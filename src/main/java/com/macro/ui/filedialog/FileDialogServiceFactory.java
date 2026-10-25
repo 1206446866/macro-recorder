@@ -5,8 +5,10 @@ import java.util.Locale;
 
 /** 仅选择已实现的平台原生服务，不提供备用文件面板。 */
 public final class FileDialogServiceFactory {
+    /** 文件面板服务由工厂静态创建，无需实例化工厂。 */
     private FileDialogServiceFactory() { }
 
+    /** 按运行平台提供文件面板服务；Windows 使用原生实现，不创建 Swing 文件面板回退。 */
     public static FileDialogService create() {
         return forOperatingSystem(System.getProperty("os.name", "未知操作系统"));
     }

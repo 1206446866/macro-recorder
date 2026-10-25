@@ -61,7 +61,7 @@ class SideMouseButtonEditorTest {
                 Class<?> type=Class.forName("com.macro.ui.dialog.MessageType");
                 var constructor=AppMessageDialog.class.getDeclaredConstructor(Window.class,type,String.class,String.class,Throwable.class,boolean.class);
                 constructor.setAccessible(true);
-                dialog=(AppMessageDialog)constructor.newInstance(null,type.getEnumConstants()[0],"fixture","fixture",null,false);
+                dialog=constructor.newInstance(null,type.getEnumConstants()[0],"fixture","fixture",null,false);
                 JPanel surface=new JPanel();
                 var install=AppMessageDialog.class.getDeclaredMethod("installWindowDragging",Component.class);install.setAccessible(true);install.invoke(dialog,surface);
                 var listener=surface.getMouseListeners()[0];

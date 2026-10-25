@@ -20,6 +20,7 @@ import java.awt.event.FocusEvent;
 public final class ComponentStyleUtil {
 
     private static final int SCROLL_BAR_SIZE = 12;
+    /** 组件样式通过静态入口复用，无需创建样式工具实例。 */
     private ComponentStyleUtil() {
     }
 
@@ -56,6 +57,7 @@ public final class ComponentStyleUtil {
         }
         ThemePalette theme = ThemeManager.getPalette();
         styleButton(button, theme, theme.accent(), theme.accentHover());
+        button.setForeground(theme.textOnAccent());
     }
 
     /** 为普通操作按钮应用当前主题的深色圆角样式。 */
@@ -95,18 +97,21 @@ public final class ComponentStyleUtil {
 
         ThemePalette theme = ThemeManager.getPalette();
         textField.setForeground(theme.textPrimary());
+        textField.setDisabledTextColor(theme.textMuted());
         textField.setCaretColor(theme.textPrimary());
         textField.setBackground(theme.targetCard());
         textField.setSelectionColor(theme.accent());
-        textField.setSelectedTextColor(Color.WHITE);
+        textField.setSelectedTextColor(theme.textOnAccent());
         textField.setOpaque(true);
         updateTextFieldBorder(textField, theme, false);
         textField.addFocusListener(new FocusAdapter() {
+            /** 字段取得焦点时更新主题边框，突出当前可编辑组件。 */
             @Override
             public void focusGained(FocusEvent event) {
                 updateTextFieldBorder(textField, theme, true);
             }
 
+            /** 字段失去焦点时恢复常规主题边框。 */
             @Override
             public void focusLost(FocusEvent event) {
                 updateTextFieldBorder(textField, theme, false);
@@ -129,11 +134,13 @@ public final class ComponentStyleUtil {
         comboBox.addPropertyChangeListener("enabled", event ->
                 updateComboBoxBorder(comboBox, theme, comboBox.hasFocus()));
         comboBox.addFocusListener(new FocusAdapter() {
+            /** 字段取得焦点时更新主题边框，突出当前可编辑组件。 */
             @Override
             public void focusGained(FocusEvent event) {
                 updateComboBoxBorder(comboBox, theme, true);
             }
 
+            /** 字段失去焦点时恢复常规主题边框。 */
             @Override
             public void focusLost(FocusEvent event) {
                 updateComboBoxBorder(comboBox, theme, false);
@@ -210,16 +217,18 @@ public final class ComponentStyleUtil {
             textField.setCaretColor(theme.textPrimary());
             textField.setBackground(theme.targetCard());
             textField.setSelectionColor(theme.accent());
-            textField.setSelectedTextColor(Color.WHITE);
+            textField.setSelectedTextColor(theme.textOnAccent());
             textField.setHorizontalAlignment(SwingConstants.RIGHT);
             textField.setFocusLostBehavior(JFormattedTextField.PERSIST);
             textField.setBorder(new EmptyBorder(6, 10, 6, 8));
             textField.addFocusListener(new FocusAdapter() {
+                /** 字段取得焦点时更新主题边框，突出当前可编辑组件。 */
                 @Override
                 public void focusGained(FocusEvent event) {
                     updateSpinnerBorder(spinner, theme, true);
                 }
 
+                /** 字段失去焦点时恢复常规主题边框。 */
                 @Override
                 public void focusLost(FocusEvent event) {
                     updateSpinnerBorder(spinner, theme, false);
@@ -228,6 +237,7 @@ public final class ComponentStyleUtil {
         }
     }
 
+    /** 按焦点和启用状态更新文本框边框，保持原有内容内边距。 */
     private static void updateTextFieldBorder(
             JTextField textField,
             ThemePalette theme,
@@ -243,6 +253,7 @@ public final class ComponentStyleUtil {
         ));
     }
 
+    /** 按焦点及禁用状态绘制下拉框边框，使禁用控件视觉弱化。 */
     private static void updateComboBoxBorder(
             JComboBox<?> comboBox,
             ThemePalette theme,
@@ -256,6 +267,7 @@ public final class ComponentStyleUtil {
         ));
     }
 
+    /** 按焦点和启用状态同步数字微调框边框。 */
     private static void updateSpinnerBorder(
             JSpinner spinner,
             ThemePalette theme,
@@ -268,6 +280,7 @@ public final class ComponentStyleUtil {
         ));
     }
 
+    /** 安装深色滚动条绘制并设置指定尺寸，保持滚动条背景透明。 */
     private static void styleScrollBar(
             JScrollBar scrollBar,
             ThemePalette theme,
@@ -287,10 +300,12 @@ public final class ComponentStyleUtil {
 
         private final ThemePalette theme;
 
+        /** 保存当前调色板，供下拉框内容和箭头共同使用。 */
         private DarkComboBoxUI(ThemePalette theme) {
             this.theme = theme;
         }
 
+        /** 创建与组件启用状态一致的主题方向按钮，并保留原有交互监听入口。 */
         @Override
         protected JButton createArrowButton() {
             JButton button = new JButton(new DirectionalArrowIcon(
@@ -311,11 +326,13 @@ public final class ComponentStyleUtil {
             return button;
         }
 
+        /** 创建使用相同调色板和滚动区域样式的下拉列表。 */
         @Override
         protected ComboPopup createPopup() {
             return new DarkComboPopup(comboBox, theme);
         }
 
+        /** 绘制下拉框当前值，禁用时显式使用深色背景和灰色文字，避免外观默认值覆盖。 */
         @Override
         public void paintCurrentValue(Graphics graphics, Rectangle bounds, boolean hasFocus) {
             if (comboBox.isEnabled()) {
@@ -340,6 +357,7 @@ public final class ComponentStyleUtil {
                     area.x, area.y, area.width, area.height, value instanceof JPanel);
         }
 
+        /** 用主题背景填充下拉框当前值区域，不依赖系统外观的禁用底色。 */
         @Override
         public void paintCurrentValueBackground(
                 Graphics graphics,
@@ -354,6 +372,7 @@ public final class ComponentStyleUtil {
     /** 带深色滚动区域的下拉菜单。 */
     private static class DarkComboPopup extends BasicComboPopup {
 
+        /** 为下拉列表及其滚动区域安装同一套深色背景、文字和选中颜色。 */
         private DarkComboPopup(JComboBox<Object> comboBox, ThemePalette theme) {
             super(comboBox);
             JList<Object> list = getList();
@@ -375,10 +394,12 @@ public final class ComponentStyleUtil {
 
         private final ThemePalette theme;
 
+        /** 保存下拉箭头按钮绘制使用的调色板。 */
         private ComboArrowButtonUI(ThemePalette theme) {
             this.theme = theme;
         }
 
+        /** 绘制下拉箭头按钮的状态背景；箭头自身继续按组件启用状态选择主题颜色。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -404,10 +425,12 @@ public final class ComponentStyleUtil {
 
         private final ThemePalette theme;
 
+        /** 保存数字微调框背景和上下方向按钮使用的调色板。 */
         private DarkSpinnerUI(ThemePalette theme) {
             this.theme = theme;
         }
 
+        /** 创建微调框递增按钮，并安装 Swing 约定的递增监听。 */
         @Override
         protected Component createNextButton() {
             JButton button = createArrowButton(SwingConstants.NORTH, true);
@@ -416,6 +439,7 @@ public final class ComponentStyleUtil {
             return button;
         }
 
+        /** 创建微调框递减按钮，并安装 Swing 约定的递减监听。 */
         @Override
         protected Component createPreviousButton() {
             JButton button = createArrowButton(SwingConstants.SOUTH, false);
@@ -424,6 +448,7 @@ public final class ComponentStyleUtil {
             return button;
         }
 
+        /** 创建与组件启用状态一致的主题方向按钮，并保留原有交互监听入口。 */
         private JButton createArrowButton(int direction, boolean upperButton) {
             JButton button = new JButton(new DirectionalArrowIcon(theme, direction));
             button.setUI(new SpinnerArrowButtonUI(theme, upperButton));
@@ -446,11 +471,13 @@ public final class ComponentStyleUtil {
         private final ThemePalette theme;
         private final boolean upperButton;
 
+        /** 保存调色板及按钮所在的上下半区，供边界和交互反馈绘制使用。 */
         private SpinnerArrowButtonUI(ThemePalette theme, boolean upperButton) {
             this.theme = theme;
             this.upperButton = upperButton;
         }
 
+        /** 绘制微调框上下箭头按钮，禁用或按下时使用对应的弱化或反馈颜色。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -483,6 +510,7 @@ public final class ComponentStyleUtil {
     private record AccentRadioButtonIcon(ThemePalette theme) implements Icon {
         private static final int SIZE = 18;
 
+        /** 依据组件启用及选择状态绘制主题图标，不依赖系统生成的灰度禁用图片。 */
         @Override
         public void paintIcon(Component component, Graphics graphics, int x, int y) {
             AbstractButton button = (AbstractButton) component;
@@ -504,11 +532,13 @@ public final class ComponentStyleUtil {
             g2.dispose();
         }
 
+        /** 返回图标使用的固定逻辑宽度。 */
         @Override
         public int getIconWidth() {
             return SIZE;
         }
 
+        /** 返回图标使用的固定逻辑高度。 */
         @Override
         public int getIconHeight() {
             return SIZE;
@@ -520,6 +550,7 @@ public final class ComponentStyleUtil {
 
         private static final int SIZE = 18;
 
+        /** 依据组件启用及选择状态绘制主题图标，不依赖系统生成的灰度禁用图片。 */
         @Override
         public void paintIcon(Component component, Graphics graphics, int x, int y) {
             AbstractButton button = (AbstractButton) component;
@@ -536,7 +567,7 @@ public final class ComponentStyleUtil {
             if (button.isSelected()) {
                 g2.setColor(rollover ? theme.accentHover() : theme.accent());
                 g2.fillRoundRect(0, 0, SIZE, SIZE, 5, 5);
-                g2.setColor(Color.WHITE);
+                g2.setColor(theme.textOnAccent());
                 g2.setStroke(new BasicStroke(
                         2f,
                         BasicStroke.CAP_ROUND,
@@ -565,11 +596,13 @@ public final class ComponentStyleUtil {
             g2.dispose();
         }
 
+        /** 返回图标使用的固定逻辑宽度。 */
         @Override
         public int getIconWidth() {
             return SIZE;
         }
 
+        /** 返回图标使用的固定逻辑高度。 */
         @Override
         public int getIconHeight() {
             return SIZE;
@@ -581,26 +614,31 @@ public final class ComponentStyleUtil {
 
         private final ThemePalette theme;
 
+        /** 保存滚动条轨道、滑块和方向按钮使用的调色板。 */
         private DarkScrollBarUI(ThemePalette theme) {
             this.theme = theme;
         }
 
+        /** 把滚动条轨道及滑块颜色统一设置为当前深色调色板。 */
         @Override
         protected void configureScrollBarColors() {
             trackColor = theme.background();
             thumbColor = theme.border();
         }
 
+        /** 创建滚动条减小方向按钮，沿用指定方向的箭头。 */
         @Override
         protected JButton createDecreaseButton(int orientation) {
             return createScrollButton(orientation);
         }
 
+        /** 创建滚动条增大方向按钮，沿用指定方向的箭头。 */
         @Override
         protected JButton createIncreaseButton(int orientation) {
             return createScrollButton(orientation);
         }
 
+        /** 建立透明且不抢焦点的滚动按钮，安装统一的深色箭头绘制。 */
         private JButton createScrollButton(int orientation) {
             JButton button = new JButton(new DirectionalArrowIcon(theme, orientation));
             button.setUI(new ScrollArrowButtonUI(theme));
@@ -618,12 +656,14 @@ public final class ComponentStyleUtil {
             return button;
         }
 
+        /** 绘制滚动条轨道背景，不改变滑块位置或滚动范围。 */
         @Override
         protected void paintTrack(Graphics graphics, JComponent component, Rectangle bounds) {
             graphics.setColor(theme.background());
             graphics.fillRect(bounds.x, bounds.y, bounds.width, bounds.height);
         }
 
+        /** 按滚动条状态绘制圆角滑块，使用独立图形副本保留后续绘制环境。 */
         @Override
         protected void paintThumb(Graphics graphics, JComponent component, Rectangle bounds) {
             if (!component.isEnabled() || bounds.isEmpty()) {
@@ -652,10 +692,12 @@ public final class ComponentStyleUtil {
 
         private final ThemePalette theme;
 
+        /** 保存滚动条端部方向按钮使用的调色板。 */
         private ScrollArrowButtonUI(ThemePalette theme) {
             this.theme = theme;
         }
 
+        /** 绘制滚动条端部方向按钮的状态背景，并保留主题箭头绘制。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -679,6 +721,7 @@ public final class ComponentStyleUtil {
         private final Color background;
         private final Color hoverBackground;
 
+        /** 保存按钮使用的调色板和常规、悬停背景颜色。 */
         private RoundedButtonUI(
                 ThemePalette theme,
                 Color background,
@@ -689,6 +732,7 @@ public final class ComponentStyleUtil {
             this.hoverBackground = hoverBackground;
         }
 
+        /** 根据组件启用、悬停和按下状态绘制主题按钮背景，再沿用按钮文字及图标绘制。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -729,6 +773,7 @@ public final class ComponentStyleUtil {
         private static final int WIDTH = 8;
         private static final int HEIGHT = 5;
 
+        /** 依据组件启用及选择状态绘制主题图标，不依赖系统生成的灰度禁用图片。 */
         @Override
         public void paintIcon(Component component, Graphics graphics, int x, int y) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -751,6 +796,7 @@ public final class ComponentStyleUtil {
             g2.dispose();
         }
 
+        /** 按指定方向绘制箭头线段，供滚动条、下拉框和微调框共用。 */
         private void paintArrow(Graphics2D g2) {
             switch (direction) {
                 case SwingConstants.NORTH -> {
@@ -772,11 +818,13 @@ public final class ComponentStyleUtil {
             }
         }
 
+        /** 返回图标使用的固定逻辑宽度。 */
         @Override
         public int getIconWidth() {
             return WIDTH;
         }
 
+        /** 返回图标使用的固定逻辑高度。 */
         @Override
         public int getIconHeight() {
             return HEIGHT;

@@ -28,6 +28,7 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 
+/** 按流程分支执行宏节点，管理节点间等待、暂停、继续及停止后的输入释放；界面进度通过回调通知。 */
 public class MacroPlayer {
 
     /** 单段毫秒转纳秒的安全边界；仅拆分等待，不限制总延迟。 */
@@ -63,6 +64,14 @@ public class MacroPlayer {
     @Setter
     private Consumer<PlayerState> onStateChange;
 
+    @Setter
+    private Consumer<PlaybackProgress> onProgress;
+
+    /** 已完成当前输入/识别，播放线程真正进入暂停等待时通知界面。 */
+    @Setter
+    private Runnable onPauseReached;
+
+    /** 创建执行真实键鼠输入的 Robot；当前桌面不支持输入自动化时由调用方处理创建异常。 */
     public MacroPlayer() throws AWTException {
 
         robot = new Robot();
@@ -197,12 +206,18 @@ public class MacroPlayer {
 
         FlowContext context = new FlowContext();
         state = PlayerState.PLAYING;
+        int currentLoop = 0;
 
         try {
             notifyStateChange(state);
-            int currentLoop = 0;
             while (loopCount == -1 || currentLoop < loopCount) {
                 currentLoop++;
+                notifyProgress(currentLoop, null, PlaybackProgress.Phase.LOOP_STARTED);
+                if (flow.getHeadWaitMillis() != null) {
+                    notifyProgress(currentLoop, null, PlaybackProgress.Phase.HEAD_WAIT_STARTED);
+                    if (!waitForDelay(flow.getHeadWaitMillis())) return context;
+                    notifyProgress(currentLoop, null, PlaybackProgress.Phase.HEAD_WAIT_COMPLETED);
+                }
                 String currentId = flow.getStartId();
 
                 while (true) {
@@ -219,11 +234,13 @@ public class MacroPlayer {
                     if (node.getType() == NodeType.END) {
                         break;
                     }
+                    notifyProgress(currentLoop, node.getId(), PlaybackProgress.Phase.NODE_STARTED);
 
                     NodeResult result = executeNode(
                             node,
                             context,
-                            imageMatcher
+                            imageMatcher,
+                            currentLoop
                     );
                     if (result == null) {
                         return context;
@@ -279,6 +296,7 @@ public class MacroPlayer {
             try {
                 releasePressedInputs();
             } finally {
+                notifyProgress(currentLoop, null, PlaybackProgress.Phase.FINISHED);
                 state = PlayerState.IDLE;
                 try {
                     notifyStateChange(state);
@@ -307,7 +325,8 @@ public class MacroPlayer {
     private NodeResult executeNode(
             MacroNode node,
             FlowContext context,
-            ImageMatcher imageMatcher
+            ImageMatcher imageMatcher,
+            int loop
     ) throws Exception {
         return switch (node.getType()) {
             case ACTION -> {
@@ -316,6 +335,7 @@ public class MacroPlayer {
                     yield null;
                 }
                 executeAction(action);
+                notifyProgress(loop, node.getId(), PlaybackProgress.Phase.NODE_COMPLETED);
                 yield NodeResult.ALWAYS;
             }
             case IMAGE_CHECK -> {
@@ -326,12 +346,13 @@ public class MacroPlayer {
                     );
                 }
                 ImageMatchResult imageMatch = imageMatcher.match(node, context);
-                if (imageMatch == null || imageMatch.getStatus() == null) {
+                if (imageMatch == null) {
                     throw new IllegalStateException(
                             "ImageMatcher 未返回有效结果：" + node.getId()
                     );
                 }
                 context.setLastImageMatch(imageMatch);
+                notifyProgress(loop, node.getId(), PlaybackProgress.Phase.NODE_COMPLETED);
                 if (!waitForDelay(0L)) {
                     yield null;
                 }
@@ -374,6 +395,7 @@ public class MacroPlayer {
         if (flow == null) {
             throw new IllegalArgumentException("宏流程不能为空");
         }
+        MacroFlowFactory.validateHeadWait(flow);
         if (flow.getStartId() == null || flow.getStartId().isBlank()) {
             throw new IllegalArgumentException("宏流程缺少 startId");
         }
@@ -452,6 +474,7 @@ public class MacroPlayer {
         }
     }
 
+    /** 播放前检查分支条件、非负等待时间和目标节点引用，避免执行输入后才发现流程损坏。 */
     private void validateBranch(
             String nodeId,
             MacroBranch branch,
@@ -508,6 +531,7 @@ public class MacroPlayer {
         }
     }
 
+    /** 接受正数播放次数和表示持续循环的 -1，拒绝零及其他负值。 */
     private void validateLoopCount(int loopCount) {
         if (loopCount == 0 || loopCount < -1) {
             throw new IllegalArgumentException("播放次数必须大于 0");
@@ -576,6 +600,7 @@ public class MacroPlayer {
     /** 每段均在安全换算范围内，暂停时仍保留该段剩余时间，停止时立即唤醒。 */
     private boolean waitForDelaySegment(long delay) throws InterruptedException {
         long remainingNanos = delay * 1_000_000L;
+        boolean pauseReported = false;
 
         synchronized (pauseLock) {
             while (true) {
@@ -584,12 +609,22 @@ public class MacroPlayer {
                 }
 
                 while (state == PlayerState.PAUSED) {
-                    pauseLock.wait();
+                    if (!pauseReported) {
+                        pauseReported = true;
+                        Runnable listener = onPauseReached;
+                        if (listener != null) {
+                            try { listener.run(); }
+                            catch (RuntimeException failure) { failure.printStackTrace(System.err); }
+                        }
+                    }
+                    // 回调可能重新进入暂停锁并继续/停止，不能错过它的唤醒。
+                    if (state == PlayerState.PAUSED) pauseLock.wait();
 
                     if (state == PlayerState.STOPPING || state == PlayerState.IDLE) {
                         return false;
                     }
                 }
+                pauseReported = false;
 
                 if (remainingNanos <= 0L) {
                     return state == PlayerState.PLAYING;
@@ -616,6 +651,18 @@ public class MacroPlayer {
     private void notifyStateChange(PlayerState state) {
         if (onStateChange != null) {
             onStateChange.accept(state);
+        }
+    }
+
+    /** 把当前执行阶段交给进度监听器；界面监听异常只记录，不改变播放顺序或输入清理。 */
+    private void notifyProgress(int loop, String nodeId, PlaybackProgress.Phase phase) {
+        Consumer<PlaybackProgress> listener = onProgress;
+        if (listener == null) return;
+        try {
+            listener.accept(new PlaybackProgress(loop, nodeId, phase));
+        } catch (RuntimeException failure) {
+            // 界面进度失败不能改变宏的执行顺序、停止或输入清理。
+            failure.printStackTrace(System.err);
         }
     }
 
@@ -684,8 +731,8 @@ public class MacroPlayer {
             try {
                 robot.mouseRelease(mask);
             } catch (RuntimeException e) {
-                System.err.println("释放鼠标按钮失败：" + mask);
-                e.printStackTrace();
+                System.getLogger(MacroPlayer.class.getName()).log(
+                        System.Logger.Level.WARNING, "释放鼠标按钮失败：" + mask, e);
             }
         }
 
@@ -695,8 +742,8 @@ public class MacroPlayer {
             try {
                 robot.keyRelease(keyCode);
             } catch (RuntimeException e) {
-                System.err.println("释放键盘按键失败：" + keyCode);
-                e.printStackTrace();
+                System.getLogger(MacroPlayer.class.getName()).log(
+                        System.Logger.Level.WARNING, "释放键盘按键失败：" + keyCode, e);
             }
         }
 

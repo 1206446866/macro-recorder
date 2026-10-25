@@ -175,6 +175,7 @@ public final class OpenCvTemplateMatcher {
         return conversionHeap + nativeMatrices + resultHeap;
     }
 
+    /** 将误差矩阵转换为相似度候选，合并重叠位置并限制结果数量；满分阈值仍按原像素复核。 */
     private SearchResult collectResults(
             Mat resultMat,
             BufferedImage source,
@@ -333,6 +334,7 @@ public final class OpenCvTemplateMatcher {
         return true;
     }
 
+    /** 按两个区域中较小区域的面积计算重叠比例，无交集或无有效面积时返回零。 */
     private double overlapRatio(Rectangle first, Rectangle second) {
         Rectangle intersection = first.intersection(second);
         if (intersection.isEmpty()) {
@@ -346,6 +348,7 @@ public final class OpenCvTemplateMatcher {
         return smallerArea <= 0.0 ? 0.0 : intersectionArea / smallerArea;
     }
 
+    /** 把 Java 图像转换为 OpenCV 的三通道 BGR 矩阵，返回的原生矩阵由调用方释放。 */
     private Mat toBgrMat(BufferedImage image) {
         int width = image.getWidth();
         int height = image.getHeight();
@@ -364,6 +367,7 @@ public final class OpenCvTemplateMatcher {
         return mat;
     }
 
+    /** 构建模板矩阵及透明掩码，记录参与匹配的像素数和透明度判定阈值。 */
     private TemplateData toTemplateData(BufferedImage image) {
         int width = image.getWidth();
         int height = image.getHeight();
@@ -400,6 +404,7 @@ public final class OpenCvTemplateMatcher {
         );
     }
 
+    /** 判断图像是否含有达到常规不透明阈值的像素，供透明模板选择掩码规则。 */
     private boolean containsOpaquePixel(int[] pixels) {
         for (int pixel : pixels) {
             if ((pixel >>> 24) >= OPAQUE_ALPHA_THRESHOLD) {
@@ -409,6 +414,7 @@ public final class OpenCvTemplateMatcher {
         return false;
     }
 
+    /** 拒绝空图像、越界阈值和非正结果上限，避免将非法参数传给 OpenCV。 */
     private void validateArguments(
             BufferedImage source,
             BufferedImage template,
@@ -426,12 +432,14 @@ public final class OpenCvTemplateMatcher {
         }
     }
 
+    /** 释放非空 OpenCV 矩阵的原生内存，允许资源尚未创建的清理路径共用此入口。 */
     private void release(Mat mat) {
         if (mat != null) {
             mat.release();
         }
     }
 
+    /** 把单调时钟的起始时间换算为已经经过的毫秒数。 */
     private long elapsedMillis(long startedAt) {
         return (System.nanoTime() - startedAt) / 1_000_000L;
     }
@@ -452,6 +460,7 @@ public final class OpenCvTemplateMatcher {
             Rectangle pixelBounds
     ) {
 
+        /** 创建独立保存区域坐标的候选结果，避免外部矩形修改影响匹配记录。 */
         private static MatchResult candidate(
                 boolean matched,
                 double similarity,
@@ -468,10 +477,12 @@ public final class OpenCvTemplateMatcher {
             boolean truncated
     ) {
 
+        /** 将命中列表保存为不可变快照，空列表引用统一按无命中处理。 */
         public SearchResult {
             matches = matches == null ? List.of() : List.copyOf(matches);
         }
 
+        /** 创建既无命中也无最佳候选的结果，用于没有有效搜索区域的情况。 */
         private static SearchResult empty() {
             return new SearchResult(List.of(), null, false);
         }

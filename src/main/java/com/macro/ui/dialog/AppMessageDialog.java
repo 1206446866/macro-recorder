@@ -5,6 +5,7 @@ import com.macro.constant.UiConstants;
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
 import com.macro.ui.util.ComponentStyleUtil;
+import com.macro.ui.window.WindowTitleBarSupport;
 
 import javax.swing.*;
 import javax.swing.border.EmptyBorder;
@@ -23,6 +24,19 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>弹窗样式全部从当前主题读取，业务代码只需使用静态方法显示消息。</p>
  */
 public final class AppMessageDialog extends JDialog {
+    private final WindowTitleBarSupport titleBarSupport;
+
+    /** 为提示和确认弹窗安装统一标题栏，保留原模态与默认确认按钮。 */
+    @Override public void addNotify() {
+        super.addNotify();
+        if (titleBarSupport != null) titleBarSupport.activate();
+    }
+
+    /** 原生窗口销毁前卸载回调，不改变确认结果和取消语义。 */
+    @Override public void removeNotify() {
+        try { if (titleBarSupport != null) titleBarSupport.deactivate(); }
+        finally { super.removeNotify(); }
+    }
 
     private static final Font FONT_NORMAL = new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 13);
     private static final Font FONT_SMALL = new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 12);
@@ -41,6 +55,7 @@ public final class AppMessageDialog extends JDialog {
     private JPanel detailsContainer;
     private JButton detailsButton;
 
+    /** 按消息类型构建统一深色提示或确认窗口，保存异常详情并安装默认确认与关闭行为。 */
     private AppMessageDialog(
             Window owner,
             MessageType messageType,
@@ -58,9 +73,10 @@ public final class AppMessageDialog extends JDialog {
         this.theme = ThemeManager.getPalette();
 
         setDefaultCloseOperation(DISPOSE_ON_CLOSE);
-        setUndecorated(true);
-        setBackground(new Color(0, 0, 0, 0));
+        setBackground(theme.background());
+        setResizable(false);
         setContentPane(createContent());
+        titleBarSupport = new WindowTitleBarSupport(this);
         getRootPane().setDefaultButton(findConfirmButton(getContentPane()));
         registerKeyboardActions();
         pack();
@@ -83,19 +99,9 @@ public final class AppMessageDialog extends JDialog {
         show(parent, MessageType.WARNING, message, null);
     }
 
-    /** 显示带异常详情的警告消息。 */
-    public static void showWarning(Component parent, String message, Throwable throwable) {
-        show(parent, MessageType.WARNING, message, throwable);
-    }
-
     /** 显示普通提示消息。 */
     public static void showInfo(Component parent, String message) {
         show(parent, MessageType.INFO, message, null);
-    }
-
-    /** 显示带异常详情的普通提示消息。 */
-    public static void showInfo(Component parent, String message, Throwable throwable) {
-        show(parent, MessageType.INFO, message, throwable);
     }
 
     /** 显示主题统一的确认弹窗，并同步返回用户选择。 */
@@ -173,8 +179,8 @@ public final class AppMessageDialog extends JDialog {
 
     /** 创建弹窗内容。 */
     private JPanel createContent() {
-        RoundedPanel root = new RoundedPanel(theme.background(), theme.border(), 20);
-        root.setLayout(new BorderLayout(0, 16));
+        JPanel root = new JPanel(new BorderLayout(0, 16));
+        root.setBackground(theme.background());
         root.setBorder(new EmptyBorder(20, 22, 18, 22));
         root.setPreferredSize(new Dimension(DIALOG_WIDTH, preferredHeight()));
 
@@ -201,16 +207,6 @@ public final class AppMessageDialog extends JDialog {
         title.setFont(FONT_TITLE);
         title.setForeground(theme.textPrimary());
         header.add(title, BorderLayout.CENTER);
-
-        JButton closeButton = new JButton(new CloseIcon(14, theme.textSecondary()));
-        closeButton.setToolTipText("关闭");
-        closeButton.setPreferredSize(new Dimension(30, 30));
-        closeButton.setFocusPainted(false);
-        closeButton.setBorderPainted(false);
-        closeButton.setContentAreaFilled(false);
-        closeButton.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        closeButton.addActionListener(event -> dispose());
-        header.add(closeButton, BorderLayout.EAST);
 
         installWindowDragging(header);
         installWindowDragging(title);
@@ -311,7 +307,7 @@ public final class AppMessageDialog extends JDialog {
         details.setLineWrap(false);
         details.setWrapStyleWord(false);
         details.setSelectionColor(theme.accent());
-        details.setSelectedTextColor(Color.WHITE);
+        details.setSelectedTextColor(theme.textOnAccent());
         details.setCaretPosition(0);
 
         JScrollPane scrollPane = new JScrollPane(
@@ -367,7 +363,7 @@ public final class AppMessageDialog extends JDialog {
         Color hover = primary ? primaryHoverColor() : theme.card();
         JButton button = new JButton(text);
         button.setFont(FONT_BOLD);
-        button.setForeground(primary ? Color.WHITE : theme.textPrimary());
+        button.setForeground(primary ? theme.textOnAccent() : theme.textPrimary());
         button.setBorder(new EmptyBorder(9, 18, 9, 18));
         button.setFocusPainted(false);
         button.setBorderPainted(false);
@@ -394,16 +390,19 @@ public final class AppMessageDialog extends JDialog {
         MouseAdapter adapter = new MouseAdapter() {
             private Point pressedPoint;
 
+            /** 仅记录左键按下时的相对位置，作为拖动提示窗口的起点。 */
             @Override
             public void mousePressed(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)) pressedPoint = event.getPoint();
             }
 
+            /** 左键释放后清除拖动起点，结束本次窗口移动。 */
             @Override
             public void mouseReleased(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)) pressedPoint = null;
             }
 
+            /** 保持初始按下偏移移动窗口，未按住左键或没有起点时不处理。 */
             @Override
             public void mouseDragged(MouseEvent event) {
                 if (pressedPoint == null || (event.getModifiersEx() & MouseEvent.BUTTON1_DOWN_MASK) == 0) return;
@@ -495,6 +494,7 @@ public final class AppMessageDialog extends JDialog {
         private final Color stroke;
         private final int radius;
 
+        /** 保存提示卡片的填充色、边框色和圆角半径，背景由组件自行绘制。 */
         private RoundedPanel(Color fill, Color stroke, int radius) {
             this.fill = fill;
             this.stroke = stroke;
@@ -502,6 +502,7 @@ public final class AppMessageDialog extends JDialog {
             setOpaque(false);
         }
 
+        /** 绘制提示卡片的圆角背景及边框，再交给 Swing 绘制其内容。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -520,11 +521,13 @@ public final class AppMessageDialog extends JDialog {
         private final Color background;
         private final Color hover;
 
+        /** 保存按钮常规和悬停背景，供交互状态绘制使用。 */
         private RoundedButtonUI(Color background, Color hover) {
             this.background = background;
             this.hover = hover;
         }
 
+        /** 根据按钮悬停与按下状态绘制圆角背景，然后沿用按钮文字和图标绘制。 */
         @Override
         public void paint(Graphics graphics, JComponent component) {
             AbstractButton button = (AbstractButton) component;
@@ -535,100 +538,76 @@ public final class AppMessageDialog extends JDialog {
             g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
             g2.setColor(fill);
             g2.fillRoundRect(0, 0, component.getWidth(), component.getHeight(), 12, 12);
-            g2.setColor(new Color(255, 255, 255, 18));
+            Color highlight = ThemeManager.getPalette().highlight();
+            g2.setColor(new Color(highlight.getRed(), highlight.getGreen(), highlight.getBlue(), 18));
             g2.drawRoundRect(0, 0, component.getWidth() - 1, component.getHeight() - 1, 12, 12);
             g2.dispose();
             super.paint(graphics, component);
         }
     }
 
-    /** 消息类型图标。 */
-    private static final class MessageIcon implements Icon {
-        private final MessageType type;
-        private final int size;
-        private final Color color;
-
-        private MessageIcon(MessageType type, int size, Color color) {
-            this.type = type;
-            this.size = size;
-            this.color = color;
+    /**
+     * 消息类型图标。
+     */
+        private record MessageIcon(MessageType type, int size, Color color) implements Icon {
+        /**
+         * 绑定消息类型、图标尺寸和颜色，供提示标题区复用。
+         */
+        private MessageIcon {
         }
 
-        @Override
-        public void paintIcon(Component component, Graphics graphics, int x, int y) {
-            Graphics2D g2 = (Graphics2D) graphics.create();
-            g2.translate(x, y);
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g2.setColor(color);
-            g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            int middle = size / 2;
+            /**
+             * 按错误、警告或信息类型绘制对应的提示图形。
+             */
+            @Override
+            public void paintIcon(Component component, Graphics graphics, int x, int y) {
+                Graphics2D g2 = (Graphics2D) graphics.create();
+                g2.translate(x, y);
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(color);
+                g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                int middle = size / 2;
 
-            switch (type) {
-                case ERROR -> {
-                    g2.drawOval(2, 2, size - 5, size - 5);
-                    g2.drawLine(7, 7, size - 8, size - 8);
-                    g2.drawLine(size - 8, 7, 7, size - 8);
+                switch (type) {
+                    case ERROR -> {
+                        g2.drawOval(2, 2, size - 5, size - 5);
+                        g2.drawLine(7, 7, size - 8, size - 8);
+                        g2.drawLine(size - 8, 7, 7, size - 8);
+                    }
+                    case WARNING -> {
+                        Polygon triangle = new Polygon(
+                                new int[]{middle, size - 2, 2},
+                                new int[]{2, size - 3, size - 3},
+                                3
+                        );
+                        g2.drawPolygon(triangle);
+                        g2.drawLine(middle, 8, middle, 14);
+                        g2.fillOval(middle - 1, 17, 3, 3);
+                    }
+                    case INFO -> {
+                        g2.drawOval(2, 2, size - 5, size - 5);
+                        g2.fillOval(middle - 1, 6, 3, 3);
+                        g2.drawLine(middle, 11, middle, 18);
+                    }
                 }
-                case WARNING -> {
-                    Polygon triangle = new Polygon(
-                            new int[]{middle, size - 2, 2},
-                            new int[]{2, size - 3, size - 3},
-                            3
-                    );
-                    g2.drawPolygon(triangle);
-                    g2.drawLine(middle, 8, middle, 14);
-                    g2.fillOval(middle - 1, 17, 3, 3);
-                }
-                case INFO -> {
-                    g2.drawOval(2, 2, size - 5, size - 5);
-                    g2.fillOval(middle - 1, 6, 3, 3);
-                    g2.drawLine(middle, 11, middle, 18);
-                }
+                g2.dispose();
             }
-            g2.dispose();
+
+            /**
+             * 返回图标使用的逻辑宽度。
+             */
+            @Override
+            public int getIconWidth() {
+                return size;
+            }
+
+            /**
+             * 返回图标使用的逻辑高度。
+             */
+            @Override
+            public int getIconHeight() {
+                return size;
+            }
         }
 
-        @Override
-        public int getIconWidth() {
-            return size;
-        }
-
-        @Override
-        public int getIconHeight() {
-            return size;
-        }
-    }
-
-    /** 关闭按钮图标。 */
-    private static final class CloseIcon implements Icon {
-        private final int size;
-        private final Color color;
-
-        private CloseIcon(int size, Color color) {
-            this.size = size;
-            this.color = color;
-        }
-
-        @Override
-        public void paintIcon(Component component, Graphics graphics, int x, int y) {
-            Graphics2D g2 = (Graphics2D) graphics.create();
-            g2.translate(x, y);
-            g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-            g2.setColor(color);
-            g2.setStroke(new BasicStroke(1.8f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
-            g2.drawLine(2, 2, size - 3, size - 3);
-            g2.drawLine(size - 3, 2, 2, size - 3);
-            g2.dispose();
-        }
-
-        @Override
-        public int getIconWidth() {
-            return size;
-        }
-
-        @Override
-        public int getIconHeight() {
-            return size;
-        }
-    }
 }

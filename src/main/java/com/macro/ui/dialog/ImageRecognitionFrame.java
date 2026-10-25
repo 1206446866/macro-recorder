@@ -4,10 +4,12 @@ import com.macro.constant.UiConstants;
 import com.macro.recognition.ScreenRecognitionService;
 import com.macro.recognition.ImageRecognitionDiagnostics;
 import com.macro.ui.component.RoundedPanel;
+import com.macro.ui.capture.WindowsCaptureSupport;
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
 import com.macro.ui.util.ComponentStyleUtil;
 import com.macro.ui.util.NumericInputUtil;
+import com.macro.ui.window.WindowTitleBarSupport;
 import com.macro.ui.filedialog.FileDialogException;
 import com.macro.ui.filedialog.FileDialogOptions;
 import com.macro.ui.filedialog.FileDialogService;
@@ -24,6 +26,8 @@ import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Locale;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -31,6 +35,19 @@ import java.util.function.Supplier;
 
 /** 用于加载模板并验证屏幕图像识别效果的独立窗口。 */
 public final class ImageRecognitionFrame extends JFrame {
+    private final WindowTitleBarSupport titleBarSupport;
+
+    /** 识别窗口创建后复用主页的三个窗口按钮及 DWM 边框。 */
+    @Override public void addNotify() {
+        super.addNotify();
+        if (titleBarSupport != null) titleBarSupport.activate();
+    }
+
+    /** 释放窗口句柄前恢复原消息链，识别取消和窗口恢复沿用现有 dispose。 */
+    @Override public void removeNotify() {
+        try { if (titleBarSupport != null) titleBarSupport.deactivate(); }
+        finally { super.removeNotify(); }
+    }
 
     private static final Dimension DEFAULT_SIZE = new Dimension(860, 600);
     private static final Dimension MINIMUM_SIZE = new Dimension(760, 540);
@@ -49,7 +66,6 @@ public final class ImageRecognitionFrame extends JFrame {
             new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 22);
 
     private final ThemePalette theme = ThemeManager.getPalette();
-    private final Window applicationWindow;
     private final FileDialogService fileDialogs = FileDialogServiceFactory.create();
     private final Supplier<File> defaultDirectorySupplier;
     private final ScreenRecognitionService recognitionService =
@@ -68,16 +84,12 @@ public final class ImageRecognitionFrame extends JFrame {
     private final JLabel centerValue = createValueLabel();
     private final JLabel resultSizeValue = createValueLabel();
     private final JLabel displayValue = createValueLabel();
-    private final JLabel engineValue = createValueLabel();
     private final JLabel peakMemoryValue = createValueLabel();
     private final JLabel memoryValue = createValueLabel();
 
     private final JButton loadButton = new JButton("加载图像");
     private final JButton clearButton = new JButton("清除");
-    private final JButton recognizeJavaButton =
-            new JButton("识别当前屏幕（Java）");
-    private final JButton recognizeOpenCvButton =
-            new JButton("识别当前屏幕（OpenCV）");
+    private final JButton recognizeButton = new JButton("识别当前屏幕");
     private final JButton copyPositionButton = new JButton("复制位置");
     private final JButton previousResultButton = new JButton("‹");
     private final JButton nextResultButton = new JButton("›");
@@ -85,10 +97,8 @@ public final class ImageRecognitionFrame extends JFrame {
     private final JCheckBox showAllResultsCheckBox =
             new JCheckBox("显示全部", true);
     private final JSpinner thresholdSpinner = new JSpinner(
-            new SpinnerNumberModel(90, 50, 100, 1)
+            new SpinnerNumberModel(90, 1, 100, 1)
     );
-    private final JCheckBox hideWindowsCheckBox =
-            new JCheckBox("识别时隐藏应用窗口", true);
 
     private BufferedImage templateImage;
     private File lastDirectory;
@@ -102,19 +112,19 @@ public final class ImageRecognitionFrame extends JFrame {
     private Timer captureTimer;
     private boolean recognizing;
     private boolean applicationWindowsHidden;
-    private boolean recognitionWindowWasVisible;
-    private boolean ownerWasVisible;
-    private int ownerFrameState;
+    private final List<HiddenWindowState> hiddenWindows = new ArrayList<>();
+    private boolean closing;
 
+    /** 创建独立识别预览窗口，绑定模板目录来源并初始化空结果，不自动采集屏幕。 */
     public ImageRecognitionFrame(
             Window applicationWindow,
             Supplier<File> defaultDirectorySupplier
     ) {
         super("图像识别测试");
-        this.applicationWindow = applicationWindow;
         this.defaultDirectorySupplier = defaultDirectorySupplier;
 
         initializeWindow(applicationWindow);
+        titleBarSupport = new WindowTitleBarSupport(this);
         initializeLayout();
         initializeEvents();
         clearResult();
@@ -285,21 +295,16 @@ public final class ImageRecognitionFrame extends JFrame {
         constraints.insets = new Insets(0, 0, 0, 16);
         panel.add(percentLabel, constraints);
 
-        hideWindowsCheckBox.setFont(FONT_NORMAL);
-        ComponentStyleUtil.styleCheckBox(hideWindowsCheckBox);
         constraints.gridx = 3;
         constraints.weightx = 1.0;
         constraints.insets = new Insets(0, 0, 0, 12);
-        panel.add(hideWindowsCheckBox, constraints);
+        panel.add(createLabel("采集时自动隐藏本程序窗口", FONT_SMALL, theme.textSecondary()), constraints);
 
-        JPanel recognitionButtons = new JPanel(new GridLayout(1, 2, 8, 0));
+        JPanel recognitionButtons = new JPanel(new GridLayout(1, 1));
         recognitionButtons.setOpaque(false);
-        recognizeJavaButton.setFont(FONT_BOLD);
-        recognizeOpenCvButton.setFont(FONT_BOLD);
-        ComponentStyleUtil.stylePrimaryButton(recognizeJavaButton);
-        ComponentStyleUtil.styleSecondaryButton(recognizeOpenCvButton);
-        recognitionButtons.add(recognizeJavaButton);
-        recognitionButtons.add(recognizeOpenCvButton);
+        recognizeButton.setFont(FONT_BOLD);
+        ComponentStyleUtil.stylePrimaryButton(recognizeButton);
+        recognitionButtons.add(recognizeButton);
         constraints.gridx = 4;
         constraints.weightx = 0.0;
         constraints.insets = new Insets(0, 0, 0, 0);
@@ -311,12 +316,7 @@ public final class ImageRecognitionFrame extends JFrame {
     private void initializeEvents() {
         loadButton.addActionListener(event -> loadTemplateImage());
         clearButton.addActionListener(event -> clearTemplateImage());
-        recognizeJavaButton.addActionListener(event -> startRecognition(
-                ScreenRecognitionService.RecognitionEngine.JAVA
-        ));
-        recognizeOpenCvButton.addActionListener(event -> startRecognition(
-                ScreenRecognitionService.RecognitionEngine.OPEN_CV
-        ));
+        recognizeButton.addActionListener(event -> startRecognition());
         copyPositionButton.addActionListener(event -> copyRecognitionPosition());
         previousResultButton.addActionListener(event -> selectAdjacentResult(-1));
         nextResultButton.addActionListener(event -> selectAdjacentResult(1));
@@ -328,6 +328,7 @@ public final class ImageRecognitionFrame extends JFrame {
                 JComponent.WHEN_IN_FOCUSED_WINDOW
         );
         addWindowListener(new WindowAdapter() {
+            /** 取消仍在等待或执行的识别任务，恢复本次临时隐藏的窗口。 */
             @Override
             public void windowClosed(WindowEvent event) {
                 cancelPendingRecognition();
@@ -346,25 +347,29 @@ public final class ImageRecognitionFrame extends JFrame {
         }
         if (selectedFile == null) return;
         try {
-            BufferedImage image = ImageIO.read(selectedFile);
-            if (image == null) {
-                AppMessageDialog.showWarning(
-                        this,
-                        "无法识别该图片，文件可能已损坏或格式暂不支持。"
-                );
-                return;
-            }
-            templateImage = image;
-            lastDirectory = selectedFile.getParentFile();
-            templatePreview.setImage(image, null, theme.accent());
-            templateNameValue.setText(selectedFile.getName());
-            templateNameValue.setToolTipText(selectedFile.getAbsolutePath());
-            templateSizeValue.setText(image.getWidth() + " × " + image.getHeight());
-            clearResult();
-            updateActionState();
+            setTemplate(selectedFile, ((Number) thresholdSpinner.getValue()).doubleValue() / 100.0);
         } catch (IOException | RuntimeException exception) {
             AppMessageDialog.showError(this, "加载待识别图像失败", exception);
         }
+    }
+
+    /** 载入动作编辑器当前的模板；只准备预览，不自动识别或修改宏。 */
+    public void setTemplate(File file, double threshold) throws IOException {
+        if (recognizing || closing) throw new IllegalArgumentException("识别窗口当前不可更换模板");
+        if (file == null || !Double.isFinite(threshold) || threshold < .01 || threshold > 1.0) {
+            throw new IllegalArgumentException("请选择有效模板和匹配阈值");
+        }
+        BufferedImage image = ImageIO.read(file);
+        if (image == null) throw new IOException("无法读取模板图片：" + file.getName());
+        templateImage = image;
+        lastDirectory = file.getAbsoluteFile().getParentFile();
+        templatePreview.setImage(image, null, theme.accent());
+        templateNameValue.setText(file.getName());
+        templateNameValue.setToolTipText(file.getAbsolutePath());
+        templateSizeValue.setText(image.getWidth() + " × " + image.getHeight());
+        thresholdSpinner.setValue((int) Math.round(threshold * 100.0));
+        clearResult();
+        updateActionState();
     }
 
     /** 保留最近目录以及测试窗口支持的全部图片格式。 */
@@ -394,10 +399,8 @@ public final class ImageRecognitionFrame extends JFrame {
     }
 
     /** 启动一次当前屏幕识别。 */
-    private void startRecognition(
-            ScreenRecognitionService.RecognitionEngine engine
-    ) {
-        if (templateImage == null || recognizing) {
+    private void startRecognition() {
+        if (closing || templateImage == null || recognizing) {
             if (templateImage == null) {
                 AppMessageDialog.showInfo(this, "请先加载待识别图像。");
             }
@@ -421,44 +424,49 @@ public final class ImageRecognitionFrame extends JFrame {
         resetResultValues();
         updateActionState();
 
-        if (hideWindowsCheckBox.isSelected()) {
+        try {
             hideApplicationWindows();
+        } catch (RuntimeException exception) {
+            recognizing = false;
+            restoreApplicationWindows();
+            showRecognitionFailure(exception);
+            updateActionState();
+            return;
         }
         ImageRecognitionDiagnostics.log("TEST", "WINDOW_PREPARATION",
                 "TemplatePath: " + templateNameValue.getToolTipText()
-                        + "\nEngine: " + engine.name()
-                        + "\nHideApplicationWindows: " + hideWindowsCheckBox.isSelected()
                         + "\nApplicationWindowsHidden: " + applicationWindowsHidden
                         + "\nCaptureSettleDelayMillis: " + CAPTURE_SETTLE_DELAY_MILLIS);
         Toolkit.getDefaultToolkit().sync();
         captureTimer = new Timer(
                 CAPTURE_SETTLE_DELAY_MILLIS,
-                event -> runRecognitionWorker(engine)
+                event -> runRecognitionWorker()
         );
         captureTimer.setRepeats(false);
         captureTimer.start();
     }
 
     /** 在后台完成屏幕采集和模板匹配。 */
-    private void runRecognitionWorker(
-            ScreenRecognitionService.RecognitionEngine engine
-    ) {
+    private void runRecognitionWorker() {
         captureTimer = null;
+        if (closing || !recognizing) return;
         BufferedImage template = templateImage;
         double threshold = ((Number) thresholdSpinner.getValue()).doubleValue() / 100.0;
         String requestId = ImageRecognitionDiagnostics.nextRequestId("TEST");
         String input = "Request: " + requestId
                 + "\nTemplatePath: " + templateNameValue.getToolTipText()
                 + "\nThreshold: " + ImageRecognitionDiagnostics.similarity(threshold)
-                + "\nEngine: " + engine.name()
                 + "\nTemplatePixels: " + template.getWidth() + "x" + template.getHeight()
                 + "\nApplicationWindowsHidden: " + applicationWindowsHidden;
 
         recognitionWorker = new SwingWorker<>() {
+            /** 在后台同步画面、采集屏幕并执行 OpenCV 匹配；采集完成后即通知事件线程恢复程序窗口。 */
             @Override
             protected ScreenRecognitionService.RecognitionReport doInBackground()
                     throws Exception {
                 ImageRecognitionDiagnostics.log("TEST", "MATCH_START", input);
+                Toolkit.getDefaultToolkit().sync();
+                WindowsCaptureSupport.flush();
                 String foreground = ImageRecognitionDiagnostics.foregroundWindow();
                 List<ScreenRecognitionService.ScreenSnapshot> snapshots =
                         recognitionService.captureScreens();
@@ -468,6 +476,7 @@ public final class ImageRecognitionFrame extends JFrame {
                         + "\n" + ImageRecognitionDiagnostics.describeScreens(snapshots);
                 ImageRecognitionDiagnostics.log("TEST", "CAPTURE", capture);
                 SwingUtilities.invokeLater(() -> {
+                    if (recognitionWorker != this || closing) return;
                     restoreApplicationWindows();
                     if (isDisplayable()) {
                         setResultStatus("正在匹配…", theme.accent());
@@ -476,8 +485,7 @@ public final class ImageRecognitionFrame extends JFrame {
                 ScreenRecognitionService.RecognitionReport report = recognitionService.recognize(
                         snapshots,
                         template,
-                        threshold,
-                        engine
+                        threshold
                 );
                 String outcome = "Request: " + requestId
                         + "\nFound: " + !report.matches().isEmpty()
@@ -493,8 +501,10 @@ public final class ImageRecognitionFrame extends JFrame {
                 return report;
             }
 
+            /** 只处理当前识别任务的结果，先恢复窗口，再显示报告或异常，忽略已过期任务的通知。 */
             @Override
             protected void done() {
+                if (recognitionWorker != this) return;
                 restoreApplicationWindows();
                 recognizing = false;
                 recognitionWorker = null;
@@ -575,18 +585,10 @@ public final class ImageRecognitionFrame extends JFrame {
         updateActionState();
     }
 
-    /** 展示本次匹配引擎、初始化时间和近似内存开销。 */
+    /** 展示本次匹配的近似内存开销。 */
     private void showRecognitionMetrics(
             ScreenRecognitionService.RecognitionReport report
     ) {
-        String engineText = report.engine().displayName();
-        if (report.initializationMillis() > 0L) {
-            engineText += "   ·   首次初始化 "
-                    + report.initializationMillis()
-                    + " ms";
-        }
-        engineValue.setText(engineText);
-
         long workingSetIncrease = report.peakWorkingSetIncreaseBytes();
         peakMemoryValue.setText(
                 workingSetIncrease < 0L
@@ -606,6 +608,7 @@ public final class ImageRecognitionFrame extends JFrame {
         );
     }
 
+    /** 将字节数格式化为 B、KB 或 MB，便于读取近似内存统计。 */
     private String formatBytes(long bytes) {
         if (bytes < 1024L) {
             return bytes + " B";
@@ -627,7 +630,7 @@ public final class ImageRecognitionFrame extends JFrame {
         }
 
         selectedResultIndex = Math.floorMod(index, displayedResults.size());
-        ScreenRecognitionService.RecognitionResult result = getSelectedResult();
+        ScreenRecognitionService.RecognitionResult result = displayedResults.get(selectedResultIndex);
         Color resultColor = latestResultsMatched
                 ? theme.success()
                 : theme.danger();
@@ -675,6 +678,7 @@ public final class ImageRecognitionFrame extends JFrame {
         );
     }
 
+    /** 根据当前结果及显示全部选项更新同一屏幕上的高亮框，不重新匹配图片。 */
     private void refreshResultPreview(Color resultColor) {
         ScreenRecognitionService.RecognitionResult selected = getSelectedResult();
         if (selected == null) {
@@ -697,6 +701,7 @@ public final class ImageRecognitionFrame extends JFrame {
         );
     }
 
+    /** 取得当前有效的识别结果；选择索引过期或没有结果时返回 null。 */
     private ScreenRecognitionService.RecognitionResult getSelectedResult() {
         if (selectedResultIndex < 0
                 || selectedResultIndex >= displayedResults.size()) {
@@ -735,22 +740,21 @@ public final class ImageRecognitionFrame extends JFrame {
         }
     }
 
-    /** 识别前暂时隐藏识别窗口和主窗口，避免应用自身进入截图。 */
+    /** 先完整记录可见窗口，再统一隐藏；父窗口隐藏不能漏掉编辑器等子窗口。 */
     private void hideApplicationWindows() {
         if (applicationWindowsHidden) {
             return;
         }
-        recognitionWindowWasVisible = isVisible();
-        ownerWasVisible = applicationWindow != null && applicationWindow.isVisible();
-        if (applicationWindow instanceof Frame frame) {
-            ownerFrameState = frame.getExtendedState();
-        }
-
-        setVisible(false);
-        if (ownerWasVisible) {
-            applicationWindow.setVisible(false);
+        hiddenWindows.clear();
+        for (Window window : Window.getWindows()) {
+            if (window.isVisible() && window.isDisplayable()) {
+                hiddenWindows.add(new HiddenWindowState(window,
+                        window instanceof Frame frame ? frame.getExtendedState() : 0,
+                        WindowsCaptureSupport.cloak(window)));
+            }
         }
         applicationWindowsHidden = true;
+        for (HiddenWindowState saved : hiddenWindows) saved.window().setVisible(false);
     }
 
     /** 恢复识别前的应用窗口可见状态。 */
@@ -759,17 +763,44 @@ public final class ImageRecognitionFrame extends JFrame {
             return;
         }
         applicationWindowsHidden = false;
-        if (applicationWindow instanceof Frame frame) {
-            frame.setExtendedState(ownerFrameState);
+        List<HiddenWindowState> savedWindows = new ArrayList<>(hiddenWindows);
+        hiddenWindows.clear();
+        savedWindows.sort(Comparator.comparingInt(saved -> ownerDepth(saved.window())));
+        boolean restoreRecognition = false;
+        for (HiddenWindowState saved : savedWindows) {
+            Window window = saved.window();
+            try {
+                if (!window.isDisplayable() || window == this && closing) continue;
+                if (window instanceof Frame frame) frame.setExtendedState(saved.extendedState());
+                window.setVisible(true);
+                restoreRecognition |= window == this;
+            } catch (RuntimeException failure) {
+                System.err.println("恢复识别前窗口状态失败：" + failure.getMessage());
+            } finally {
+                saved.cloak().close();
+            }
         }
-        if (applicationWindow != null) {
-            applicationWindow.setVisible(ownerWasVisible);
-        }
-        if (recognitionWindowWasVisible && isDisplayable()) {
-            setVisible(true);
+        if (restoreRecognition) {
             toFront();
             requestFocus();
         }
+    }
+
+    /** 计算窗口所属链的深度，使恢复时先显示父窗口，再显示所属子窗口。 */
+    private static int ownerDepth(Window window) {
+        int depth = 0;
+        while ((window = window.getOwner()) != null) depth++;
+        return depth;
+    }
+
+    private record HiddenWindowState(Window window, int extendedState, WindowsCaptureSupport.Cloak cloak) { }
+
+    /** 先标记关闭并取消任务，恢复其他窗口后释放当前窗口，防止迟到回调重新打开它。 */
+    @Override
+    public void dispose() {
+        closing = true;
+        cancelPendingRecognition();
+        super.dispose();
     }
 
     /** 取消尚未结束的延时或后台识别。 */
@@ -778,10 +809,9 @@ public final class ImageRecognitionFrame extends JFrame {
             captureTimer.stop();
             captureTimer = null;
         }
-        if (recognitionWorker != null && !recognitionWorker.isDone()) {
-            recognitionWorker.cancel(true);
-            recognitionWorker = null;
-        }
+        SwingWorker<?, ?> pending = recognitionWorker;
+        recognitionWorker = null;
+        if (pending != null && !pending.isDone()) pending.cancel(true);
         recognizing = false;
         restoreApplicationWindows();
     }
@@ -807,16 +837,16 @@ public final class ImageRecognitionFrame extends JFrame {
         positionValue.setToolTipText(null);
     }
 
+    /** 清除匹配详情与内存显示，同时移除上一轮统计的工具提示。 */
     private void resetResultValues() {
         resetMatchValues();
-        engineValue.setText("—");
         peakMemoryValue.setText("—");
         peakMemoryValue.setToolTipText(null);
         memoryValue.setText("—");
         memoryValue.setToolTipText(null);
     }
 
-    /** 清空匹配位置详情，同时保留本次引擎与内存统计。 */
+    /** 清空匹配位置详情，同时保留本次内存统计。 */
     private void resetMatchValues() {
         similarityValue.setText("—");
         positionValue.setText("—");
@@ -826,6 +856,7 @@ public final class ImageRecognitionFrame extends JFrame {
         displayValue.setText("—");
     }
 
+    /** 同步更新识别状态文字及其主题提示颜色。 */
     private void setResultStatus(String text, Color color) {
         resultStatusValue.setText(text);
         resultStatusValue.setForeground(color);
@@ -836,10 +867,8 @@ public final class ImageRecognitionFrame extends JFrame {
         boolean hasTemplate = templateImage != null;
         loadButton.setEnabled(!recognizing);
         clearButton.setEnabled(hasTemplate && !recognizing);
-        recognizeJavaButton.setEnabled(hasTemplate && !recognizing);
-        recognizeOpenCvButton.setEnabled(hasTemplate && !recognizing);
+        recognizeButton.setEnabled(hasTemplate && !recognizing);
         thresholdSpinner.setEnabled(!recognizing);
-        hideWindowsCheckBox.setEnabled(!recognizing);
         boolean hasResult = getSelectedResult() != null;
         copyPositionButton.setEnabled(!recognizing && hasResult);
         previousResultButton.setEnabled(
@@ -853,12 +882,14 @@ public final class ImageRecognitionFrame extends JFrame {
         );
     }
 
+    /** 创建识别预览使用的主题圆角卡片，并设置统一内容边距。 */
     private RoundedPanel createCard() {
         RoundedPanel card = new RoundedPanel(theme.card(), theme.border(), 16);
         card.setBorder(new EmptyBorder(14, 14, 14, 14));
         return card;
     }
 
+    /** 创建透明的网格信息容器，供模板和结果字段复用。 */
     private JPanel createInformationPanel() {
         JPanel panel = new JPanel(new GridBagLayout());
         panel.setOpaque(false);
@@ -872,14 +903,14 @@ public final class ImageRecognitionFrame extends JFrame {
         panel.add(createInformationItem("相似度", similarityValue));
         panel.add(createInformationItem("显示器 / 耗时", displayValue));
         panel.add(createInformationItem("识别位置", positionValue));
-        panel.add(createInformationItem("识别引擎", engineValue));
-        panel.add(createInformationItem("中心坐标", centerValue));
         panel.add(createInformationItem("进程峰值", peakMemoryValue));
-        panel.add(createInformationItem("区域尺寸", resultSizeValue));
+        panel.add(createInformationItem("中心坐标", centerValue));
         panel.add(createInformationItem("算法内存", memoryValue));
+        panel.add(createInformationItem("区域尺寸", resultSizeValue));
         return panel;
     }
 
+    /** 将字段名称和数值标签组合为一项可伸展的识别信息。 */
     private JPanel createInformationItem(String name, JLabel value) {
         JPanel item = new JPanel(new GridBagLayout());
         item.setOpaque(false);
@@ -900,6 +931,7 @@ public final class ImageRecognitionFrame extends JFrame {
         return item;
     }
 
+    /** 在指定信息行放置名称和数值，数值区域占用剩余横向空间。 */
     private void addInformationRow(
             JPanel panel,
             int row,
@@ -922,6 +954,7 @@ public final class ImageRecognitionFrame extends JFrame {
         panel.add(value, constraints);
     }
 
+    /** 创建使用指定字体和主题颜色的普通标签。 */
     private JLabel createLabel(String text, Font font, Color color) {
         JLabel label = new JLabel(text);
         label.setFont(font);
@@ -929,6 +962,7 @@ public final class ImageRecognitionFrame extends JFrame {
         return label;
     }
 
+    /** 创建统一样式的空值标签，等待模板或识别结果填充。 */
     private JLabel createValueLabel() {
         JLabel label = new JLabel("—");
         label.setFont(FONT_NORMAL);
@@ -946,6 +980,7 @@ public final class ImageRecognitionFrame extends JFrame {
         private Color highlightColor = theme.accent();
         private Color selectedColor = theme.accent();
 
+        /** 初始化透明预览画布及其默认显示尺寸。 */
         private RecognitionPreviewPanel() {
             setOpaque(true);
             setBackground(theme.targetCard());
@@ -954,6 +989,7 @@ public final class ImageRecognitionFrame extends JFrame {
             setBorder(BorderFactory.createLineBorder(theme.border(), 1, true));
         }
 
+        /** 替换预览图片和单个高亮区域，复制区域信息后请求重绘。 */
         private void setImage(
                 BufferedImage image,
                 Rectangle highlightBounds,
@@ -982,6 +1018,7 @@ public final class ImageRecognitionFrame extends JFrame {
             repaint();
         }
 
+        /** 保存同屏多个匹配框、当前重点框及各自颜色，刷新预览而不重新识别。 */
         private void setHighlights(
                 BufferedImage image,
                 List<Rectangle> highlightBounds,
@@ -1007,6 +1044,7 @@ public final class ImageRecognitionFrame extends JFrame {
             repaint();
         }
 
+        /** 按可用区域缩放绘制图片与高亮框，没有图片时显示当前空状态提示。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             super.paintComponent(graphics);
@@ -1066,6 +1104,7 @@ public final class ImageRecognitionFrame extends JFrame {
             g2.dispose();
         }
 
+        /** 在预览区域绘制居中的空结果或处理中提示。 */
         private void drawEmptyState(Graphics2D graphics) {
             graphics.setFont(FONT_NORMAL);
             graphics.setColor(theme.textMuted());
@@ -1077,6 +1116,7 @@ public final class ImageRecognitionFrame extends JFrame {
             );
         }
 
+        /** 按图片缩放和偏移换算匹配区域，分别绘制普通框或当前重点框。 */
         private void drawHighlight(
                 Graphics2D graphics,
                 Rectangle bounds,

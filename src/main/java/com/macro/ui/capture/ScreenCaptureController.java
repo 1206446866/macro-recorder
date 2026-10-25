@@ -42,6 +42,7 @@ public final class ScreenCaptureController {
     private long sessionSequence;
     private long activeSessionId;
 
+    /** 绑定截图所属主窗口和成功回调，其余会话、窗口隐藏及取消状态由控制器统一管理。 */
     public ScreenCaptureController(
             JFrame owner,
             Consumer<BufferedImage> onCaptured
@@ -177,6 +178,7 @@ public final class ScreenCaptureController {
         boolean immediatelyHidden = hiddenWindows.stream().allMatch(saved -> saved.cloak.available());
         long startedNanos = captureStartedNanos;
         captureWorker = new SwingWorker<>() {
+            /** 在后台同步待处理桌面更新并采集冻结屏幕，避免采集和等待阻塞事件线程。 */
             @Override
             protected ScreenSnapshot doInBackground() throws Exception {
                 long syncStarted = System.nanoTime();
@@ -204,6 +206,7 @@ public final class ScreenCaptureController {
                 return new ScreenSnapshot(image, screenBounds, configuration);
             }
 
+            /** 核对截图会话仍有效后在事件线程显示框选层，失败或取消统一走会话收尾。 */
             @Override
             protected void done() {
                 if (!isCurrentSession(sessionId)) {
@@ -370,13 +373,16 @@ public final class ScreenCaptureController {
     }
 
     private record VisibleWindowState(Window window, int extendedState, WindowsCaptureSupport.Cloak cloak) {
+        /** 保存窗口可见前的扩展状态，未启用原生遮蔽时使用空恢复记录。 */
         private VisibleWindowState(Window window, int extendedState) {
             this(window, extendedState, WindowsCaptureSupport.Cloak.UNAVAILABLE);
         }
     }
 
+    /** 抽象单块屏幕的采集入口，允许隔离检查提供合成图像。 */
     @FunctionalInterface
     interface CaptureSource {
+        /** 采集给定显示器和逻辑区域的多分辨率画面，保留原有 DPI 处理流程。 */
         MultiResolutionImage capture(GraphicsDevice device, Rectangle bounds) throws Exception;
     }
 

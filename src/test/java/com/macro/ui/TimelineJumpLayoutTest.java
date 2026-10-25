@@ -118,14 +118,14 @@ class TimelineJumpLayoutTest {
             int type=iterator.currentSegment(coordinates);
             if(segments==1){
                 assertEquals(java.awt.geom.PathIterator.SEG_LINETO,type);
-                assertEquals((double)start.y,coordinates[1]);
+                assertEquals(start.y,coordinates[1]);
                 assertTrue(route.forward()?coordinates[0]>start.x:coordinates[0]<start.x);
             }
             if(type==java.awt.geom.PathIterator.SEG_QUADTO){curves++;previousX=coordinates[2];previousY=coordinates[3];}
             else{
                 if(coordinates[0]==end.x && coordinates[1]==end.y){
                     assertEquals(java.awt.geom.PathIterator.SEG_LINETO,type);
-                    assertEquals((double)end.y,previousY);
+                    assertEquals(end.y,previousY);
                     assertTrue(route.forward()?previousX<end.x:previousX>end.x);
                 }
                 previousX=coordinates[0];previousY=coordinates[1];

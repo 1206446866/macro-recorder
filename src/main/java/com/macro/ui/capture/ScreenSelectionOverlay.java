@@ -21,7 +21,6 @@ import java.util.function.Consumer;
 public final class ScreenSelectionOverlay extends JDialog {
 
     private final BufferedImage screenImage;
-    private final Rectangle screenBounds;
     private final Consumer<BufferedImage> onConfirmed;
     private final Runnable onCanceled;
     private final Consumer<Throwable> onFailed;
@@ -32,6 +31,7 @@ public final class ScreenSelectionOverlay extends JDialog {
     private boolean closed;
     private boolean keyDispatcherInstalled;
 
+    /** 使用冻结屏幕图像建立框选覆盖层，绑定完成、取消和失败回调，不在拖动过程中重新截屏。 */
     public ScreenSelectionOverlay(
             Window owner,
             BufferedImage screenImage,
@@ -48,7 +48,7 @@ public final class ScreenSelectionOverlay extends JDialog {
                 Objects.requireNonNull(configuration, "屏幕配置不能为空")
         );
         this.screenImage = Objects.requireNonNull(screenImage, "屏幕图像不能为空");
-        this.screenBounds = new Rectangle(
+        Rectangle bounds = new Rectangle(
                 Objects.requireNonNull(screenBounds, "屏幕范围不能为空")
         );
         this.onConfirmed = Objects.requireNonNull(onConfirmed, "完成回调不能为空");
@@ -59,11 +59,12 @@ public final class ScreenSelectionOverlay extends JDialog {
         setUndecorated(true);
         setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         setContentPane(canvas);
-        setBounds(this.screenBounds);
+        setBounds(bounds);
         setAlwaysOnTop(true);
         setFocusableWindowState(true);
         setAutoRequestFocus(true);
         addWindowListener(new WindowAdapter() {
+            /** 把系统关闭操作转为取消框选，统一恢复所属窗口状态。 */
             @Override
             public void windowClosing(WindowEvent event) {
                 cancelSelection();
@@ -117,12 +118,14 @@ public final class ScreenSelectionOverlay extends JDialog {
                 "confirmCapture"
         );
         actionMap.put("cancelCapture", new AbstractAction() {
+            /** 响应取消快捷键，结束当前框选并交回截图控制器。 */
             @Override
             public void actionPerformed(ActionEvent event) {
                 cancelSelection();
             }
         });
         actionMap.put("confirmCapture", new AbstractAction() {
+            /** 响应确认快捷键，仅在当前选区有效时完成截图。 */
             @Override
             public void actionPerformed(ActionEvent event) {
                 confirmSelection();
@@ -208,6 +211,7 @@ public final class ScreenSelectionOverlay extends JDialog {
         private Rectangle selection;
         private boolean dragging;
 
+        /** 建立冻结画面画布，安装选区移动、调整和确认所需的鼠标监听。 */
         private SelectionCanvas() {
             setLayout(null);
             setOpaque(true);
@@ -234,6 +238,7 @@ public final class ScreenSelectionOverlay extends JDialog {
             addMouseMotionListener(mouseHandler);
         }
 
+        /** 绘制冻结背景、遮罩、当前选区和辅助提示，不改变屏幕采集结果。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             super.paintComponent(graphics);
@@ -440,14 +445,17 @@ public final class ScreenSelectionOverlay extends JDialog {
             );
         }
 
+        /** 计算冻结图像像素宽度相对画布逻辑宽度的比例。 */
         private double imageScaleX() {
             return screenImage.getWidth() / (double) Math.max(1, getWidth());
         }
 
+        /** 计算冻结图像像素高度相对画布逻辑高度的比例。 */
         private double imageScaleY() {
             return screenImage.getHeight() / (double) Math.max(1, getHeight());
         }
 
+        /** 判断当前选区是否具有可用于裁剪的有效尺寸。 */
         private boolean hasValidSelection() {
             return selection != null
                     && selection.width >= MINIMUM_SELECTION_SIZE
@@ -495,6 +503,7 @@ public final class ScreenSelectionOverlay extends JDialog {
         /** 选区鼠标交互。 */
         private final class SelectionMouseHandler extends MouseAdapter {
 
+            /** 右键取消框选，左键双击有效选区时确认，其余有效起点用于建立新选区。 */
             @Override
             public void mousePressed(MouseEvent event) {
                 if (SwingUtilities.isRightMouseButton(event)) {
@@ -521,6 +530,7 @@ public final class ScreenSelectionOverlay extends JDialog {
                 repaint();
             }
 
+            /** 框选拖动时根据起点和当前指针更新选区，范围由统一选区计算约束。 */
             @Override
             public void mouseDragged(MouseEvent event) {
                 if (!dragging || dragStart == null) {
@@ -530,6 +540,7 @@ public final class ScreenSelectionOverlay extends JDialog {
                 repaint();
             }
 
+            /** 结束本次框选，确定选区并更新确认工具栏位置。 */
             @Override
             public void mouseReleased(MouseEvent event) {
                 if (!dragging || !SwingUtilities.isLeftMouseButton(event)) {
@@ -542,6 +553,7 @@ public final class ScreenSelectionOverlay extends JDialog {
                 repaint();
             }
 
+            /** 处理画布点击确认等选区操作，不重新采集桌面。 */
             @Override
             public void mouseClicked(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)

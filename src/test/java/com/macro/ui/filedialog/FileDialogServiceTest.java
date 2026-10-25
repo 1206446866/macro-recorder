@@ -6,7 +6,7 @@ import java.util.List;
 
 /** 不打开文件面板，验证平台选择、配置不可变性与不支持平台的明确报错。 */
 public final class FileDialogServiceTest {
-    public static void main(String[] args) throws Exception {
+    public static void main(String[] args) {
         check(FileDialogServiceFactory.forOperatingSystem("Windows 11")
                 instanceof WindowsNativeFileDialogService, "Windows 没有使用原生服务");
         for (String operatingSystem : List.of("Darwin", "Mac OS X", "Linux", "未知操作系统")) {

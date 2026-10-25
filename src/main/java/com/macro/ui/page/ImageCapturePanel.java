@@ -75,6 +75,7 @@ public final class ImageCapturePanel extends JPanel {
     private boolean saving;
     private boolean importing;
 
+    /** 绑定页面导航、截图回调及图片保存服务，建立空预览和图片导入入口。 */
     public ImageCapturePanel(
             Runnable onBack,
             Runnable onOpenSettings,
@@ -103,6 +104,7 @@ public final class ImageCapturePanel extends JPanel {
     /** 接收图片粘贴和文件拖入，沿用现有预览与保存流程。 */
     private void installImageImport() {
         setTransferHandler(new TransferHandler() {
+            /** 仅在页面可操作时接受支持的图片、文件或地址格式，不在拖入检测阶段读取图片。 */
             @Override
             public boolean canImport(TransferSupport support) {
                 boolean addressDrop = support.isDrop() && java.util.Arrays.stream(support.getDataFlavors())
@@ -121,6 +123,7 @@ public final class ImageCapturePanel extends JPanel {
                 return true;
             }
 
+            /** 按传输格式导入图片或文件；地址来源交给后台读取，失败沿用现有提示。 */
             @Override
             public boolean importData(TransferSupport support) {
                 if (!canImport(support)) {
@@ -198,6 +201,7 @@ public final class ImageCapturePanel extends JPanel {
         getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(
                 KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), actionKey);
         getActionMap().put(actionKey, new AbstractAction() {
+            /** 响应图像采集页的粘贴快捷键，文本字段取得焦点或后台忙碌时不抢占普通粘贴。 */
             @Override
             public void actionPerformed(ActionEvent event) {
                 KeyboardFocusManager focusManager = KeyboardFocusManager.getCurrentKeyboardFocusManager();
@@ -234,11 +238,13 @@ public final class ImageCapturePanel extends JPanel {
         importing = true;
         updateImageActions(capturedImage != null);
         new SwingWorker<BufferedImage, Void>() {
+            /** 在后台读取图片来源地址，避免网络或文件加载阻塞界面。 */
             @Override
             protected BufferedImage doInBackground() throws Exception {
                 return ImageTransferUtil.loadImage(address);
             }
 
+            /** 把导入结果更新到预览，失败时提示来源限制，并恢复图片操作控件。 */
             @Override
             protected void done() {
                 importing = false;
@@ -486,8 +492,9 @@ public final class ImageCapturePanel extends JPanel {
         if (defaultDirectory == null) {
             defaultDirectory = appConfig.getDefaultScreenCaptureDirectory();
         }
-        if (!defaultDirectory.exists()) {
-            defaultDirectory.mkdirs();
+        if (!defaultDirectory.exists() && !defaultDirectory.mkdirs() && !defaultDirectory.isDirectory()) {
+            System.getLogger(ImageCapturePanel.class.getName()).log(System.Logger.Level.WARNING,
+                    "无法准备默认截图目录，将继续通过系统文件面板选择路径：" + defaultDirectory);
         }
 
         return FileDialogOptions.builder(FileDialogOptions.Mode.SAVE_FILE)
@@ -515,11 +522,13 @@ public final class ImageCapturePanel extends JPanel {
         updateImageActions(true);
 
         new SwingWorker<File, Void>() {
+            /** 在后台将本次图片写入目标 PNG 文件，保存完成前不切换当前文件信息。 */
             @Override
             protected File doInBackground() throws Exception {
                 return imageCaptureStorage.savePng(imageToSave, targetFile);
             }
 
+            /** 保存成功后更新文件名称和状态；失败不冒充成功，收尾时恢复图片操作控件。 */
             @Override
             protected void done() {
                 saving = false;
@@ -599,15 +608,18 @@ public final class ImageCapturePanel extends JPanel {
 
         private BufferedImage image;
 
+        /** 初始化由采集页面统一提供背景的透明预览区域。 */
         private ImagePreviewPanel() {
             setOpaque(false);
         }
 
+        /** 替换当前预览图片并请求重绘，不在此处修改保存状态。 */
         private void setImage(BufferedImage image) {
             this.image = image;
             repaint();
         }
 
+        /** 绘制主题预览框，并将图片按可用空间等比例显示；空图片显示默认提示。 */
         @Override
         protected void paintComponent(Graphics graphics) {
             super.paintComponent(graphics);
@@ -704,6 +716,7 @@ public final class ImageCapturePanel extends JPanel {
 
         private static final int SIZE = 16;
 
+        /** 按采集、保存或导航用途绘制主题线条图标。 */
         @Override
         public void paintIcon(Component component, Graphics graphics, int x, int y) {
             Graphics2D g2 = (Graphics2D) graphics.create();
@@ -727,10 +740,15 @@ public final class ImageCapturePanel extends JPanel {
                 }
                 case SETTINGS -> {
                     g2.drawOval(5, 5, 6, 6);
-                    g2.drawLine(8, 1, 8, 4);
-                    g2.drawLine(8, 12, 8, 15);
-                    g2.drawLine(1, 8, 4, 8);
-                    g2.drawLine(12, 8, 15, 8);
+                    for (int i = 0; i < 8; i++) {
+                        double angle = i * Math.PI / 4;
+                        int innerX = 8 + (int) Math.round(Math.cos(angle) * 5);
+                        int innerY = 8 + (int) Math.round(Math.sin(angle) * 5);
+                        int outerX = 8 + (int) Math.round(Math.cos(angle) * 7);
+                        int outerY = 8 + (int) Math.round(Math.sin(angle) * 7);
+                        g2.drawLine(innerX, innerY, outerX, outerY);
+                    }
+                    g2.fillOval(7, 7, 2, 2);
                 }
                 case CAPTURE -> {
                     g2.drawLine(2, 6, 2, 2);
@@ -763,11 +781,13 @@ public final class ImageCapturePanel extends JPanel {
             g2.dispose();
         }
 
+        /** 返回图标固定的逻辑宽度。 */
         @Override
         public int getIconWidth() {
             return SIZE;
         }
 
+        /** 返回图标固定的逻辑高度。 */
         @Override
         public int getIconHeight() {
             return SIZE;

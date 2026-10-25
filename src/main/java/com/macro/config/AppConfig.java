@@ -32,6 +32,7 @@ public class AppConfig {
     private static final String KEY_RECORDING_BAR_Y = "record.controlBar.y";
     private static final String KEY_RECORDING_BAR_WIDTH = "record.controlBar.width";
     private static final String KEY_TIMELINE_INSERT_POSITION = "timeline.defaultInsertPosition";
+    private static final String KEY_STANDBY_HEAD_ENABLED = "timeline.standbyHeadEnabled";
     private static final String KEY_MINIMIZE_ON_PLAY_START = "minimizeOnPlayStart";
     private static final String KEY_RESTORE_WINDOW_AFTER_PLAY_STOP =
             "restoreWindowAfterPlayStop";
@@ -47,6 +48,7 @@ public class AppConfig {
     private final File defaultScreenCaptureDirectory;
     private final Properties properties = new Properties();
 
+    /** 定位应用配置和默认目录，读取已有设置，并补齐首次运行所需的保存位置。 */
     public AppConfig() {
         applicationDirectory = resolveApplicationDirectory();
         configFile = new File(applicationDirectory, CONFIG_FILE_NAME);
@@ -146,19 +148,6 @@ public class AppConfig {
     }
 
     /**
-     * 设置默认 MR 保存目录。
-     */
-    public void setDefaultSaveDirectory(File directory) {
-        if (directory == null) {
-            properties.remove(DEFAULT_SAVE_DIRECTORY);
-        } else {
-            properties.setProperty(DEFAULT_SAVE_DIRECTORY, directory.getAbsolutePath());
-        }
-
-        save();
-    }
-
-    /**
      * 获取默认截图保存目录。
      * 未配置时使用程序目录下的 ScreenCapture 文件夹。
      */
@@ -170,19 +159,6 @@ public class AppConfig {
             return defaultScreenCaptureDirectory;
         }
         return new File(configuredDirectory);
-    }
-
-    /** 设置默认截图保存目录。 */
-    public void setDefaultScreenCaptureDirectory(File directory) {
-        if (directory == null) {
-            properties.remove(DEFAULT_SCREEN_CAPTURE_DIRECTORY);
-        } else {
-            properties.setProperty(
-                    DEFAULT_SCREEN_CAPTURE_DIRECTORY,
-                    directory.getAbsolutePath()
-            );
-        }
-        save();
     }
 
     /**
@@ -247,6 +223,7 @@ public class AppConfig {
 
     /** 紧凑录制栏独立的逻辑坐标；高度始终由当前布局计算。 */
     public record RecordingBarPlacement(int x, int y, int width) {
+        /** 保存紧凑操作栏独立的位置和宽度，不包含主页尺寸或操作栏高度。 */
         public RecordingBarPlacement {
             if (width <= 0) throw new IllegalArgumentException("操作栏宽度必须大于零");
         }
@@ -279,30 +256,6 @@ public class AppConfig {
         return false;
     }
 
-    /**
-     * 一次性更新设置窗口中的全部配置，避免逐项写入配置文件。
-     * 保存失败时恢复内存中的旧配置。
-     *
-     * @return 配置是否成功保存
-     */
-    public synchronized boolean updateSettings(
-            File saveDirectory,
-            File screenCaptureDirectory,
-            boolean loadLastMacroOnStartup,
-            boolean recordMouseMove,
-            int mouseMoveInterval,
-            boolean minimizeOnRecording,
-            boolean minimizeOnPlayStart,
-            boolean restoreWindowAfterPlayStop
-    ) {
-        return updateSettings(
-                saveDirectory, screenCaptureDirectory, loadLastMacroOnStartup,
-                recordMouseMove, mouseMoveInterval,
-                minimizeOnRecording ? RecordingStartBehavior.MINIMIZE : RecordingStartBehavior.NONE,
-                getTimelineInsertPosition(), minimizeOnPlayStart, restoreWindowAfterPlayStop
-        );
-    }
-
     /** 一次保存录制窗口行为、时间线插入方向及既有设置，失败时恢复全部旧值。 */
     public synchronized boolean updateSettings(
             File saveDirectory,
@@ -314,6 +267,18 @@ public class AppConfig {
             TimelineInsertPosition timelineInsertPosition,
             boolean minimizeOnPlayStart,
             boolean restoreWindowAfterPlayStop
+    ) {
+        return updateSettings(saveDirectory, screenCaptureDirectory, loadLastMacroOnStartup,
+                recordMouseMove, mouseMoveInterval, recordingStartBehavior, timelineInsertPosition,
+                minimizeOnPlayStart, restoreWindowAfterPlayStop, isStandbyHeadEnabled());
+    }
+
+    /** 与其他设置一次保存头部待机开关，不提供默认时长设置。 */
+    public synchronized boolean updateSettings(
+            File saveDirectory, File screenCaptureDirectory, boolean loadLastMacroOnStartup,
+            boolean recordMouseMove, int mouseMoveInterval,
+            RecordingStartBehavior recordingStartBehavior, TimelineInsertPosition timelineInsertPosition,
+            boolean minimizeOnPlayStart, boolean restoreWindowAfterPlayStop, boolean standbyHeadEnabled
     ) {
         if (recordingStartBehavior == null || timelineInsertPosition == null) {
             throw new IllegalArgumentException("录制启动行为和时间线插入方向不能为空。");
@@ -339,6 +304,7 @@ public class AppConfig {
         properties.setProperty(KEY_MOUSE_MOVE_INTERVAL, Integer.toString(mouseMoveInterval));
         properties.setProperty(KEY_RECORDING_START_BEHAVIOR, recordingStartBehavior.name());
         properties.setProperty(KEY_TIMELINE_INSERT_POSITION, timelineInsertPosition.name());
+        properties.setProperty(KEY_STANDBY_HEAD_ENABLED, Boolean.toString(standbyHeadEnabled));
         properties.setProperty(KEY_MINIMIZE_ON_RECORDING,
                 Boolean.toString(recordingStartBehavior == RecordingStartBehavior.MINIMIZE));
         properties.setProperty(KEY_MINIMIZE_ON_PLAY_START, Boolean.toString(minimizeOnPlayStart));
@@ -356,6 +322,22 @@ public class AppConfig {
         return false;
     }
 
+    /** 默认关闭；时长由每个宏自身保存。 */
+    public boolean isStandbyHeadEnabled() {
+        return Boolean.parseBoolean(properties.getProperty(KEY_STANDBY_HEAD_ENABLED, "false"));
+    }
+
+    /** 时间线快捷开关只保存本项，保存失败则恢复原配置。 */
+    public synchronized boolean updateStandbyHeadEnabled(boolean enabled) {
+        if (enabled == isStandbyHeadEnabled()) return true;
+        String previous = properties.getProperty(KEY_STANDBY_HEAD_ENABLED);
+        properties.setProperty(KEY_STANDBY_HEAD_ENABLED, Boolean.toString(enabled));
+        if (save()) return true;
+        if (previous == null) properties.remove(KEY_STANDBY_HEAD_ENABLED);
+        else properties.setProperty(KEY_STANDBY_HEAD_ENABLED, previous);
+        return false;
+    }
+
     /**
      * 获取启动时是否自动加载上一次使用的 MR 文件。
      * 默认开启。
@@ -364,17 +346,6 @@ public class AppConfig {
         return Boolean.parseBoolean(
                 properties.getProperty(LOAD_LAST_MACRO_ON_STARTUP, "true")
         );
-    }
-
-    /**
-     * 设置启动时是否自动加载上一次使用的 MR 文件。
-     */
-    public void setLoadLastMacroOnStartup(boolean enabled) {
-        properties.setProperty(
-                LOAD_LAST_MACRO_ON_STARTUP,
-                Boolean.toString(enabled)
-        );
-        save();
     }
 
     /**
@@ -454,19 +425,6 @@ public class AppConfig {
         return Boolean.parseBoolean(
                 properties.getProperty(KEY_MINIMIZE_ON_RECORDING, "true")
         );
-    }
-
-    /**
-     * 设置录制开始时是否最小化主窗口。
-     *
-     * @param minimize 是否最小化主窗口
-     */
-    public void setMinimizeOnRecording(boolean minimize) {
-        properties.setProperty(
-                KEY_MINIMIZE_ON_RECORDING,
-                Boolean.toString(minimize)
-        );
-        save();
     }
 
     /**

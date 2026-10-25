@@ -20,6 +20,7 @@ import java.awt.event.FocusEvent;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -60,7 +61,7 @@ public final class TimelinePlaybackProtectionTest {
             invoke(fixture.panel, "selectMacroNode", new Class<?>[]{MacroNode.class}, fixture.first);
             fixture.panel.getActionMap().get("deleteSelectedTimelineAction")
                     .actionPerformed(new ActionEvent(fixture.panel, 0, "Delete"));
-            Container coordinate = coordinate(fixture.panel);
+            Container coordinate = Objects.requireNonNull(coordinate(fixture.panel), "缺少坐标编辑组件");
             invoke(coordinate, "beginEdit", new Class<?>[0]);
             check(text(coordinate) == null, "只读坐标仍创建编辑器");
             invoke(fixture.panel, "beginRetryDelayEdit", new Class<?>[]{MacroNode.class}, fixture.image);
@@ -92,7 +93,7 @@ public final class TimelinePlaybackProtectionTest {
             String before = json(fixture.flow);
             JTextField editor;
             if (kind == 0) {
-                Container coordinate = coordinate(fixture.panel);
+                Container coordinate = Objects.requireNonNull(coordinate(fixture.panel), "缺少坐标编辑组件");
                 invoke(coordinate, "beginEdit", new Class<?>[0]);
                 editor = text(coordinate);
             } else if (kind == 1) {
@@ -124,9 +125,9 @@ public final class TimelinePlaybackProtectionTest {
             check(json(fixture.flow).equals(before), "结束后旧失焦/回车又写入模型");
         }
         Fixture fixture = new Fixture();
-        Container coordinate = coordinate(fixture.panel);
+        Container coordinate = Objects.requireNonNull(coordinate(fixture.panel), "缺少坐标编辑组件");
         invoke(coordinate, "beginEdit", new Class<?>[0]);
-        JTextField editor = text(coordinate);
+        JTextField editor = Objects.requireNonNull(text(coordinate), "坐标编辑器未打开");
         editor.setText("999");
         fixture.panel.setEditingEnabled(false);
         fixture.panel.setEditingEnabled(true);

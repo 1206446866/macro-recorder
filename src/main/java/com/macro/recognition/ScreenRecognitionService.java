@@ -20,7 +20,6 @@ public final class ScreenRecognitionService {
 
     private static final int MAX_RECOGNITION_RESULT_COUNT = 100;
 
-    private final TemplateMatcher templateMatcher = new TemplateMatcher();
     private final OpenCvTemplateMatcher openCvTemplateMatcher =
             new OpenCvTemplateMatcher();
 
@@ -57,18 +56,11 @@ public final class ScreenRecognitionService {
     public RecognitionReport recognize(
             List<ScreenSnapshot> snapshots,
             BufferedImage template,
-            double threshold,
-            RecognitionEngine engine
+            double threshold
     ) {
-        RecognitionEngine selectedEngine = engine == null
-                ? RecognitionEngine.JAVA
-                : engine;
-        long initializationMillis = selectedEngine == RecognitionEngine.OPEN_CV
-                ? openCvTemplateMatcher.ensureLoaded()
-                : 0L;
+        long initializationMillis = openCvTemplateMatcher.ensureLoaded();
         if (snapshots == null || snapshots.isEmpty()) {
             return RecognitionReport.empty(
-                    selectedEngine,
                     initializationMillis
             );
         }
@@ -90,71 +82,37 @@ public final class ScreenRecognitionService {
                         1,
                         MAX_RECOGNITION_RESULT_COUNT - matches.size()
                 );
-                if (selectedEngine == RecognitionEngine.OPEN_CV) {
-                    OpenCvTemplateMatcher.SearchResult searchResult =
-                            openCvTemplateMatcher.findAll(
-                                    snapshot.image(),
-                                    template,
-                                    threshold,
-                                    remainingResultCount
-                            );
-                    truncated |= searchResult.truncated();
-                    for (OpenCvTemplateMatcher.MatchResult match
-                            : searchResult.matches()) {
-                        if (matches.size() >= MAX_RECOGNITION_RESULT_COUNT) {
-                            truncated = true;
-                            break;
-                        }
-                        matches.add(toRecognitionResult(snapshot, match));
+                OpenCvTemplateMatcher.SearchResult searchResult =
+                        openCvTemplateMatcher.findAll(
+                                snapshot.image(),
+                                template,
+                                threshold,
+                                remainingResultCount
+                        );
+                truncated |= searchResult.truncated();
+                for (OpenCvTemplateMatcher.MatchResult match
+                        : searchResult.matches()) {
+                    if (matches.size() >= MAX_RECOGNITION_RESULT_COUNT) {
+                        truncated = true;
+                        break;
                     }
-                    RecognitionResult current = toRecognitionResult(
-                            snapshot,
-                            searchResult.bestCandidate()
-                    );
-                    if (current != null && (bestCandidate == null
-                            || current.similarity() > bestCandidate.similarity())) {
-                        bestCandidate = current;
-                    }
-                    estimatedWorkingMemoryBytes = Math.max(
-                            estimatedWorkingMemoryBytes,
-                            openCvTemplateMatcher.estimateWorkingMemoryBytes(
-                                    snapshot.image(),
-                                    template
-                            )
-                    );
-                } else {
-                    TemplateMatcher.SearchResult searchResult =
-                            templateMatcher.findAll(
-                                    snapshot.image(),
-                                    template,
-                                    threshold,
-                                    remainingResultCount
-                            );
-                    truncated |= searchResult.truncated();
-                    for (TemplateMatcher.MatchResult match
-                            : searchResult.matches()) {
-                        if (matches.size() >= MAX_RECOGNITION_RESULT_COUNT) {
-                            truncated = true;
-                            break;
-                        }
-                        matches.add(toRecognitionResult(snapshot, match));
-                    }
-                    RecognitionResult current = toRecognitionResult(
-                            snapshot,
-                            searchResult.bestCandidate()
-                    );
-                    if (current != null && (bestCandidate == null
-                            || current.similarity() > bestCandidate.similarity())) {
-                        bestCandidate = current;
-                    }
-                    estimatedWorkingMemoryBytes = Math.max(
-                            estimatedWorkingMemoryBytes,
-                            templateMatcher.estimateWorkingMemoryBytes(
-                                    snapshot.image(),
-                                    template
-                            )
-                    );
+                    matches.add(toRecognitionResult(snapshot, match));
                 }
+                RecognitionResult current = toRecognitionResult(
+                        snapshot,
+                        searchResult.bestCandidate()
+                );
+                if (current != null && (bestCandidate == null
+                        || current.similarity() > bestCandidate.similarity())) {
+                    bestCandidate = current;
+                }
+                estimatedWorkingMemoryBytes = Math.max(
+                        estimatedWorkingMemoryBytes,
+                        openCvTemplateMatcher.estimateWorkingMemoryBytes(
+                                snapshot.image(),
+                                template
+                        )
+                );
             }
             elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
         } finally {
@@ -169,31 +127,11 @@ public final class ScreenRecognitionService {
                 matches,
                 bestCandidate,
                 truncated,
-                selectedEngine,
                 elapsedMillis,
                 initializationMillis,
                 heapDeltaBytes,
                 memoryMonitor.peakIncreaseBytes(),
                 estimatedWorkingMemoryBytes
-        );
-    }
-
-    /** 将单屏像素匹配结果转换为全局逻辑坐标结果。 */
-    private RecognitionResult toRecognitionResult(
-            ScreenSnapshot snapshot,
-            TemplateMatcher.MatchResult match
-    ) {
-        if (match == null) {
-            return null;
-        }
-        Rectangle pixelBounds = match.pixelBounds();
-        return new RecognitionResult(
-                match.matched(),
-                match.similarity(),
-                toLogicalBounds(snapshot, pixelBounds),
-                new Rectangle(pixelBounds),
-                snapshot.image(),
-                snapshot.displayName()
         );
     }
 
@@ -216,6 +154,7 @@ public final class ScreenRecognitionService {
         );
     }
 
+    /** 取得当前 JVM 已使用的堆字节数，用于识别前后内存增量统计。 */
     private long usedHeapBytes() {
         Runtime runtime = Runtime.getRuntime();
         return runtime.totalMemory() - runtime.freeMemory();
@@ -266,22 +205,6 @@ public final class ScreenRecognitionService {
     ) {
     }
 
-    /** 可供测试切换的模板匹配引擎。 */
-    public enum RecognitionEngine {
-        JAVA("Java"),
-        OPEN_CV("OpenCV");
-
-        private final String displayName;
-
-        RecognitionEngine(String displayName) {
-            this.displayName = displayName;
-        }
-
-        public String displayName() {
-            return displayName;
-        }
-    }
-
     /** 单个识别位置及其所在屏幕图像。 */
     public record RecognitionResult(
             boolean matched,
@@ -298,7 +221,6 @@ public final class ScreenRecognitionService {
             List<RecognitionResult> matches,
             RecognitionResult bestCandidate,
             boolean truncated,
-            RecognitionEngine engine,
             long elapsedMillis,
             long initializationMillis,
             long heapDeltaBytes,
@@ -306,19 +228,19 @@ public final class ScreenRecognitionService {
             long estimatedWorkingMemoryBytes
     ) {
 
+        /** 复制命中列表形成报告快照，空列表引用按没有命中处理。 */
         public RecognitionReport {
             matches = matches == null ? List.of() : List.copyOf(matches);
         }
 
+        /** 生成空屏幕列表对应的报告，保留初始化耗时，并标记工作集统计不可用。 */
         private static RecognitionReport empty(
-                RecognitionEngine engine,
                 long initializationMillis
         ) {
             return new RecognitionReport(
                     List.of(),
                     null,
                     false,
-                    engine,
                     0L,
                     initializationMillis,
                     0L,

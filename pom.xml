@@ -8,7 +8,7 @@
 
     <groupId>com.macro</groupId>
     <artifactId>recorder</artifactId>
-    <version>1.0.0</version>
+    <version>1.1.0</version>
 
     <name>recorder</name>
     <description>Java macro recorder</description>
@@ -38,7 +38,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>
-            <version>2.22.3</version>
+            <version>2.22.4</version>
         </dependency>
 
         <!-- Lombok -->

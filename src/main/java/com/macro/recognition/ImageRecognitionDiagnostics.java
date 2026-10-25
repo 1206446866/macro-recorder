@@ -31,9 +31,11 @@ public final class ImageRecognitionDiagnostics {
     /** 区分同一节点的重复识别和测试窗口同时发起的识别。 */
     private static final AtomicLong REQUEST_SEQUENCE = new AtomicLong();
 
+    /** 诊断工具通过静态方法使用，无需创建实例。 */
     private ImageRecognitionDiagnostics() {
     }
 
+    /** 生成带来源和递增序号的请求标识，用于关联同一次识别的日志与诊断图片。 */
     public static String nextRequestId(String source) {
         return source + "-" + REQUEST_SEQUENCE.incrementAndGet();
     }

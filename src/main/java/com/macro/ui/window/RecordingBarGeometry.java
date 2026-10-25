@@ -6,6 +6,7 @@ import java.util.List;
 
 /** 紧凑录制栏的纯几何约束，不访问桌面或配置文件。 */
 public final class RecordingBarGeometry {
+    /** 几何约束只提供纯计算入口，无需创建实例。 */
     private RecordingBarGeometry() { }
 
     /** 使用 Swing 逻辑坐标，选取相交最多或最近的可用屏幕，并完全移回工作区。 */
@@ -24,8 +25,8 @@ public final class RecordingBarGeometry {
             double overlapHeight = Math.max(0, Math.min((double) requested.y + minimum.height,
                     (double) area.y + area.height) - Math.max(requested.y, area.y));
             double overlap = overlapWidth * overlapHeight;
-            double dx = requested.x - Math.max(area.x, Math.min((double) requested.x, (double) area.x + area.width));
-            double dy = requested.y - Math.max(area.y, Math.min((double) requested.y, (double) area.y + area.height));
+            double dx = requested.x - Math.max(area.x, Math.min(requested.x, (double) area.x + area.width));
+            double dy = requested.y - Math.max(area.y, Math.min(requested.y, (double) area.y + area.height));
             double distance = dx * dx + dy * dy;
             if (overlap > bestArea || (overlap == bestArea && distance < bestDistance)) {
                 chosen = area;
@@ -34,8 +35,8 @@ public final class RecordingBarGeometry {
             }
         }
         int width = Math.max(minimum.width, Math.min(requested.width, chosen.width));
-        int x = (int) Math.max(chosen.x, Math.min((long) requested.x, (long) chosen.x + chosen.width - width));
-        int y = (int) Math.max(chosen.y, Math.min((long) requested.y, (long) chosen.y + chosen.height - minimum.height));
+        int x = (int) Math.max(chosen.x, Math.min(requested.x, (long) chosen.x + chosen.width - width));
+        int y = (int) Math.max(chosen.y, Math.min(requested.y, (long) chosen.y + chosen.height - minimum.height));
         return new Rectangle(x, y, width, minimum.height);
     }
 

@@ -24,6 +24,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
     private final long baselineWorkingSetBytes;
     private final Thread samplerThread;
 
+    /** 记录当前进程工作集基线，能够查询时启动后台采样；不支持查询时保留不可用状态。 */
     private ProcessMemoryMonitor() {
         baselineWorkingSetBytes = queryWorkingSetBytes();
         peakWorkingSetBytes.set(Math.max(0L, baselineWorkingSetBytes));
@@ -38,10 +39,12 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         samplerThread.start();
     }
 
+    /** 开始一次识别期间的内存采样，调用方在识别结束后负责关闭。 */
     static ProcessMemoryMonitor start() {
         return new ProcessMemoryMonitor();
     }
 
+    /** 返回采样峰值相对基线的非负增量；系统无法查询工作集时返回 -1。 */
     long peakIncreaseBytes() {
         if (baselineWorkingSetBytes < 0L) {
             return -1L;
@@ -52,6 +55,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         );
     }
 
+    /** 按采样间隔更新峰值，收到停止请求后再保留最后一次有效采样。 */
     private void sampleLoop() {
         while (running.get()) {
             sampleNow();
@@ -60,6 +64,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         sampleNow();
     }
 
+    /** 读取一次工作集并原子更新峰值，忽略本次不可用的查询结果。 */
     private void sampleNow() {
         long workingSetBytes = queryWorkingSetBytes();
         if (workingSetBytes >= 0L) {
@@ -67,6 +72,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         }
     }
 
+    /** 停止采样线程并等待短暂收尾，再记录最终样本；重复关闭不再启动清理。 */
     @Override
     public void close() {
         if (samplerThread == null || !running.getAndSet(false)) {
@@ -81,6 +87,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         sampleNow();
     }
 
+    /** 查询当前 Windows 进程的工作集字节数；平台不支持或原生查询失败时返回 -1。 */
     private long queryWorkingSetBytes() {
         if (!Platform.isWindows()) {
             return -1L;
@@ -104,6 +111,7 @@ final class ProcessMemoryMonitor implements AutoCloseable {
                 W32APIOptions.DEFAULT_OPTIONS
         );
 
+        /** 读取指定进程的内存统计到调用方提供的原生结构。 */
         boolean GetProcessMemoryInfo(
                 WinNT.HANDLE process,
                 ProcessMemoryCounters counters,
@@ -137,8 +145,9 @@ final class ProcessMemoryMonitor implements AutoCloseable {
         public BaseTSD.SIZE_T pagefileUsage = new BaseTSD.SIZE_T();
         public BaseTSD.SIZE_T peakPagefileUsage = new BaseTSD.SIZE_T();
 
+        /** 按当前进程位数计算结构长度，供 Windows 校验内存统计缓冲区。 */
         private ProcessMemoryCounters() {
-            size = new WinDef.DWORD(size());
+            size.setValue(size());
         }
     }
 }

@@ -28,6 +28,7 @@ public final class RecordingControlInputFilter {
     private long startedAt;
     private long suspendedAt = -1;
 
+    /** 使用与原生事件一致的系统单调时钟建立录制控件输入过滤器。 */
     public RecordingControlInputFilter() {
         this(Kernel32.INSTANCE::GetTickCount64);
     }
@@ -43,6 +44,7 @@ public final class RecordingControlInputFilter {
         refreshRegion();
     }
 
+    /** 开始新录制会话时清空挂起和按键记录，并保留启动边界附近仍有用的控件区域历史。 */
     public synchronized void reset() {
         suspensions.clear();
         ignoredMouseButtons.clear();
@@ -70,10 +72,12 @@ public final class RecordingControlInputFilter {
         }
     }
 
+    /** 记录挂起区间的起点，重复挂起不会覆盖首次时间。 */
     public synchronized void beginSuspension() {
         if (suspendedAt < 0) suspendedAt = ticks.getAsLong();
     }
 
+    /** 结束当前挂起区间并保留有限历史，供迟到的原生事件判断是否应被忽略。 */
     public synchronized void endSuspension() {
         if (suspendedAt < 0) return;
         suspensions.addLast(new Interval(suspendedAt, ticks.getAsLong()));
@@ -81,6 +85,7 @@ public final class RecordingControlInputFilter {
         while (suspensions.size() > HISTORY_LIMIT) suspensions.removeFirst();
     }
 
+    /** 判断鼠标按下是否来自控件或挂起区间，被忽略的按钮持续过滤到释放。 */
     public synchronized boolean ignoreMousePress(NativeMouseEvent event) {
         boolean ignore = ignoredMouseButtons.contains(event.getButton())
                 || blocked(event.getWhen()) || inControlRegion(event.getWhen(), region -> region.contains(event));
@@ -88,6 +93,7 @@ public final class RecordingControlInputFilter {
         return ignore;
     }
 
+    /** 清理被抑制按钮；已经录入按下的动作优先保留配对释放，避免生成无法松开的宏。 */
     public synchronized boolean ignoreMouseRelease(NativeMouseEvent event, boolean recordedPress) {
         if (ignoredMouseButtons.remove(event.getButton())) return true;
         // 在外部按下、在控制栏上松开时，保留已录入按下动作的配对释放。
@@ -95,11 +101,13 @@ public final class RecordingControlInputFilter {
         return blocked(event.getWhen()) || inControlRegion(event.getWhen(), region -> region.contains(event));
     }
 
+    /** 过滤控件区域、挂起区间以及被抑制按钮拖动期间的移动和滚轮输入。 */
     public synchronized boolean ignoreMouseMotion(NativeMouseEvent event) {
         return !ignoredMouseButtons.isEmpty() || blocked(event.getWhen())
                 || inControlRegion(event.getWhen(), region -> region.contains(event));
     }
 
+    /** 结合事件时间和控件焦点过滤键盘按下，并跟踪尚未录入的被抑制按键。 */
     public synchronized boolean ignoreKeyPress(NativeKeyEvent event, boolean recordedPress) {
         int key = keyId(event);
         boolean ignore = ignoredKeys.contains(key) || blocked(event.getWhen())
@@ -108,13 +116,16 @@ public final class RecordingControlInputFilter {
         return ignore;
     }
 
+    /** 清理被抑制按键；已录入按下的键保留配对释放，其他按键继续按挂起和焦点过滤。 */
     public synchronized boolean ignoreKeyRelease(NativeKeyEvent event, boolean recordedPress) {
         if (ignoredKeys.remove(keyId(event))) return true;
         if (recordedPress) return false;
         return blocked(event.getWhen()) || inControlRegion(event.getWhen(), region -> region.keyboardFocused);
     }
 
+    /** 将指定鼠标按钮加入抑制集合，直到收到对应释放事件。 */
     public synchronized void suppressMouseUntilRelease(int button) { ignoredMouseButtons.add(button); }
+    /** 将指定键标识加入抑制集合，直到收到对应释放事件。 */
     public synchronized void suppressKeyUntilRelease(int key) { ignoredKeys.add(key); }
 
     /** 截图桥接不得以控制栏按钮坐标作为宏轨迹的起点或终点。 */
@@ -123,10 +134,12 @@ public final class RecordingControlInputFilter {
         return region != null && region.contains(x, y);
     }
 
+    /** 组合原生键码与左右键位置，区分代码相同但物理位置不同的按键。 */
     static int keyId(NativeKeyEvent event) {
         return (event.getKeyCode() << 3) | event.getKeyLocation();
     }
 
+    /** 按统一时钟判断事件是否早于本次录制或落在当前及历史挂起区间。 */
     private boolean blocked(long when) {
         long time = eventTime(when);
         if (time < startedAt || (suspendedAt >= 0 && time >= suspendedAt)) return true;
@@ -136,6 +149,7 @@ public final class RecordingControlInputFilter {
         return false;
     }
 
+    /** 按事件时间查找适用的控件区域快照，避免使用已经移动后的窗口位置误判旧输入。 */
     private boolean inControlRegion(long when, Predicate<Region> matches) {
         refreshRegion();
         long time = eventTime(when);
@@ -165,6 +179,7 @@ public final class RecordingControlInputFilter {
     public record Region(List<Rectangle> areas, boolean keyboardFocused) {
         public static final Region EMPTY = new Region(List.of(), false);
 
+        /** 复制并规范化控件矩形列表，同时保存键盘焦点状态，供录制线程安全读取。 */
         public Region {
             Objects.requireNonNull(areas, "录制控件区域不能为空");
             List<Rectangle> copies = new ArrayList<>(areas.size());
@@ -192,8 +207,10 @@ public final class RecordingControlInputFilter {
             return bounds == null ? new Rectangle() : bounds;
         }
 
+        /** 判断给定原生事件或物理坐标是否落入任一录制控件矩形。 */
         private boolean contains(NativeMouseEvent event) { return contains(event.getX(), event.getY()); }
 
+        /** 判断给定原生事件或物理坐标是否落入任一录制控件矩形。 */
         private boolean contains(double x, double y) {
             for (Rectangle area : areas) if (area.contains(x, y)) return true;
             return false;

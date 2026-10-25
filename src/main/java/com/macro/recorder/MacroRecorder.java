@@ -34,6 +34,7 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 
+/** 将全局键鼠事件转换为带相对等待时间的宏动作，维护录制、暂停与截图状态，并过滤程序控件产生的输入。 */
 public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheelListener, NativeKeyListener {
 
     /** 桥接轨迹允许生成的最大移动节点数，避免极端距离产生过多动作。 */
@@ -104,6 +105,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     @Setter
     private Consumer<ImageCaptureSession> onImageCaptureRequested;
 
+    /** 绑定应用录制配置，后续启动和事件处理沿用该配置提供的采样与窗口行为。 */
     public MacroRecorder(AppConfig appConfig) {
         this(appConfig, WindowsDpiUtil.getScale(), WindowsMouseUtil::getCursorPosition,
                 (x, y) -> WindowsWindowUtil.getRootWindow(WindowsWindowUtil.getWindowFromPoint(x, y)));
@@ -116,15 +118,6 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         this.dpiScale = dpiScale;
         this.cursorPosition = cursorPosition;
         this.rootWindowAtPoint = rootWindowAtPoint;
-    }
-
-    /**
-     * 开始全局录制。
-     *
-     * @throws NativeHookException 注册全局钩子失败
-     */
-    public void start() throws NativeHookException {
-        start(null);
     }
 
     /**
@@ -193,6 +186,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         }
     }
 
+    /** 按录制状态、控件过滤和采样间隔记录鼠标移动，并转换为宏使用的逻辑坐标。 */
     @Override
     public void nativeMouseMoved(NativeMouseEvent e) {
         synchronized (recordingLock) {
@@ -218,6 +212,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         }
     }
 
+    /** 忽略不支持的侧键及控件输入，记录有效按下动作并保存配对释放所需的状态。 */
     @Override
     public void nativeMousePressed(NativeMouseEvent e) {
         MouseButton button = convertMouseButton(e.getButton());
@@ -229,20 +224,19 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             }
             long now = timelineNow(System.currentTimeMillis());
             LogicalPoint point = getLogicalEventPosition(e);
-            if (button != null) {
-                MacroAction action = MacroAction.mousePress(
-                        point.x(),
-                        point.y(),
-                        button,
-                        elapsedSinceLastAction(now)
-                );
-                recordAction(action);
-                pressedMouseButtons.put(e.getButton(), action);
-                lastTime = now;
-            }
+            MacroAction action = MacroAction.mousePress(
+                    point.x(),
+                    point.y(),
+                    button,
+                    elapsedSinceLastAction(now)
+            );
+            recordAction(action);
+            pressedMouseButtons.put(e.getButton(), action);
+            lastTime = now;
         }
     }
 
+    /** 为已录入的按下动作记录配对释放，清理按键状态并保留原有目标窗口过滤规则。 */
     @Override
     public void nativeMouseReleased(NativeMouseEvent e) {
         MouseButton button = convertMouseButton(e.getButton());
@@ -255,19 +249,18 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             }
             long now = timelineNow(System.currentTimeMillis());
             LogicalPoint point = getLogicalEventPosition(e);
-            if (button != null) {
-                recordAction(MacroAction.mouseRelease(
-                        point.x(),
-                        point.y(),
-                        button,
-                        elapsedSinceLastAction(now)
-                ));
-                lastTime = now;
-                pressedMouseButtons.remove(e.getButton());
-            }
+            recordAction(MacroAction.mouseRelease(
+                    point.x(),
+                    point.y(),
+                    button,
+                    elapsedSinceLastAction(now)
+            ));
+            lastTime = now;
+            pressedMouseButtons.remove(e.getButton());
         }
     }
 
+    /** 仅在允许录制的区域和状态下记录滚轮方向、幅度及当前位置。 */
     @Override
     public void nativeMouseWheelMoved(NativeMouseWheelEvent e) {
         synchronized (recordingLock) {
@@ -287,6 +280,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         }
     }
 
+    /** 优先响应 F12 停止和 F10 截图，其余有效按键按录制时钟记录并跟踪按下状态。 */
     @SneakyThrows
     @Override
     public void nativeKeyPressed(NativeKeyEvent e) {
@@ -320,6 +314,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         }
     }
 
+    /** 过滤功能快捷键和未录入的控件按键，记录需要配对的键盘释放动作。 */
     @Override
     public void nativeKeyReleased(NativeKeyEvent e) {
         if (e.getKeyCode() == NativeKeyEvent.VC_F10
@@ -543,6 +538,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         controlInputFilter.setRegionSupplier(supplier);
     }
 
+    /** 刷新操作控件的物理屏幕区域，让已排队输入按事件发生时的窗口位置接受过滤。 */
     public void refreshControlRegion() { controlInputFilter.refreshRegion(); }
 
     /** 普通暂停与截图共用输入过滤和时间补偿，保留此前全部动作。 */
@@ -557,6 +553,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         }
     }
 
+    /** 仅从录制暂停状态恢复，调整计时基准，使暂停耗时不进入后续动作间隔。 */
     public boolean resume() {
         synchronized (recordingLock) {
             if (state != RecorderState.PAUSED) return false;
@@ -618,6 +615,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         );
     }
 
+    /** 把原生按键代码转换为 AWT 可播放的代码，不能识别的按键返回无效标记。 */
     private int convertKeyCode(NativeKeyEvent e) {
         if (e.getKeyLocation() == NativeKeyEvent.KEY_LOCATION_NUMPAD) {
             int numpadKeyCode = convertNumpadKeyCode(e.getRawCode());
@@ -629,6 +627,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         return convertKeyCode(e.getKeyCode());
     }
 
+    /** 把原生按键代码转换为 AWT 可播放的代码，不能识别的按键返回无效标记。 */
     private int convertKeyCode(int keyCode) {
 
         return switch (keyCode) {
@@ -769,6 +768,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         };
     }
 
+    /** 按原生数字键盘代码转换为对应的 AWT 数字键盘按键，未知值返回无效标记。 */
     private int convertNumpadKeyCode(int rawCode) {
         return switch (rawCode) {
             case 96 -> KeyEvent.VK_NUMPAD0;
@@ -790,6 +790,7 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
         };
     }
 
+    /** 将原生鼠标按钮转换为宏使用的按钮类型，保留对已有按钮编号的映射。 */
     private MouseButton convertMouseButton(int button) {
         return switch (button) {
             case NativeMouseEvent.BUTTON1 -> MouseButton.LEFT;
