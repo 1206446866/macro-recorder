@@ -4,13 +4,13 @@
 
 ## 2026-10-25：1.1.0 提交前复核
 
-在维护者将 `ApplicationInfo.APP_VERSION` 设为 1.1.0 后，Maven 数字版本已同步。提交前重新核对累计源码、测试、删除项和新增文件；当前 README 同步版本依据及识别入口说明，更新日志按 `1.1.0（待发布）` 归组。1.0.0 已提交的分支跳转、保存校验及侧键保护不重复计为本轮新增功能。
+在维护者将 `ApplicationInfo.APP_VERSION` 设为 1.1.0 后，Maven 数字版本已同步。提交前重新核对累计源码、测试、删除项和新增文件；当前 README 同步版本依据及识别入口说明，更新日志按 `1.1.0` 归组。1.0.0 已提交的分支跳转、保存校验及侧键保护不重复计为本轮新增功能。
 
 - 定向执行 `mvn '-Dsurefire.timeout=180' '-Dtest=MainTitleBarTest,SideMouseButtonEditorTest,ImageJumpEditorTest,ImageRecognitionFrameTest,RecognitionWindowVisibilityTest,ScreenCaptureControllerTest,LegacyRegressionTest#popupTitleBarContract+mainTitleBarContract+recordingTitleBarContract+recordingBarNativeResize+modelessActionEditor+aboutSettings+shortcutsSettings+standbyHeadSettings+numericInputValidation' test`：26 项，失败 0、错误 0、跳过 0，退出码 0，15:52:08 完成。
 - 完整执行 `mvn '-Dsurefire.timeout=180' test`：114 项，失败 0、错误 0、跳过 0，退出码 0，15:55:11 完成。
 - 执行 `mvn compile`：退出码 0，15:58:51 完成；生产类已在上述测试运行中重新编译。
 
-日志位于 `target/push-1.1.0-20261025/` 的 `directed.log`、`full-test.log`、`compile.log`。没有执行 `mvn clean`，没有重新运行 Qodana；测试使用既有隔离及模拟机制，真实 Windows 11、150% DPI 的窗口/截图行为仍按各功能人工清单验收。提交和远程同步结果以实际 Git 记录为准，不将推送等同于打包发布。
+日志位于 `target/push-1.1.0-20261025/` 的 `directed.log`、`full-test.log`、`compile.log`。没有执行 `mvn clean`，没有重新运行 Qodana；测试使用既有隔离及模拟机制，真实 Windows 11、150% DPI 的窗口/截图行为仍按各功能人工清单验收。提交和远程同步结果以实际 Git 记录为准；按项目约定，推送 GitHub 即视为当前版本发布，安装包产物和桌面验收仍以实际执行记录为准。随后发布状态及约定的修正仅涉及文档，未重复运行上述测试。
 
 ## 2026-10-25：统一应用弹窗标题栏
 
