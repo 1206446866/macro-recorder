@@ -285,6 +285,8 @@ public class MacroStorage {
         if (MacroFlowFactory.findRetryDelay(node) < 0L) {
             throw new IllegalArgumentException("MR 图像识别节点重试延迟无效：" + node.getId());
         }
+        config.validateClickBehaviors();
+        config.validateSearchScope();
     }
 
     /** 校验流程图中的 ACTION，避免兼容 actions 正常但 flow 节点损坏。 */

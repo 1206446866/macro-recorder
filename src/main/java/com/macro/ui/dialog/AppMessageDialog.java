@@ -1,6 +1,7 @@
 package com.macro.ui.dialog;
 
 import com.macro.constant.UiConstants;
+import com.macro.diagnostics.ErrorReporter;
 
 import com.macro.ui.theme.ThemeManager;
 import com.macro.ui.theme.ThemePalette;
@@ -44,6 +45,7 @@ public final class AppMessageDialog extends JDialog {
     private static final Font FONT_TITLE = new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 16);
     private static final int DIALOG_WIDTH = 430;
     private static final int DETAILS_EXPANDED_HEIGHT = 200;
+    private static final AtomicBoolean UNCAUGHT_DIALOG_OPEN = new AtomicBoolean();
 
     private final MessageType messageType;
     private final String dialogTitle;
@@ -99,6 +101,16 @@ public final class AppMessageDialog extends JDialog {
         show(parent, MessageType.WARNING, message, null);
     }
 
+    /** 真正失败但使用警告样式的操作同样保留异常报告，普通校验警告不写日志。 */
+    public static void showWarning(Component parent, String message, Throwable throwable) {
+        show(parent, MessageType.WARNING, message, throwable);
+    }
+
+    /** 在启动入口安装；每个异常都记录，连续未捕获异常只保留一个待处理弹窗。 */
+    public static void installUncaughtExceptionHandler() {
+        ErrorReporter.installUncaughtHandler((message, failure) -> display(null, MessageType.ERROR, message, failure, true));
+    }
+
     /** 显示普通提示消息。 */
     public static void showInfo(Component parent, String message) {
         show(parent, MessageType.INFO, message, null);
@@ -131,23 +143,33 @@ public final class AppMessageDialog extends JDialog {
             String message,
             Throwable throwable
     ) {
+        if (messageType == MessageType.ERROR || throwable != null) ErrorReporter.report(message, throwable);
+        display(parent, messageType, message, throwable, false);
+    }
+
+    private static void display(Component parent, MessageType messageType, String message,
+                                Throwable throwable, boolean uncaught) {
+        if (GraphicsEnvironment.isHeadless()) return;
+        if (uncaught && !UNCAUGHT_DIALOG_OPEN.compareAndSet(false, true)) return;
         Runnable showTask = () -> {
-            Window owner = resolveOwner(parent);
-            AppMessageDialog dialog = new AppMessageDialog(
-                    owner,
-                    messageType,
-                    messageType.getTitle(),
-                    message,
-                    throwable,
-                    false
-            );
-            dialog.setVisible(true);
+            try {
+                Window owner = resolveOwner(parent);
+                AppMessageDialog dialog = new AppMessageDialog(
+                        owner, messageType, messageType.getTitle(), message, throwable, false);
+                dialog.setVisible(true);
+            } catch (Throwable displayFailure) {
+                ErrorReporter.report("显示消息弹窗失败", displayFailure);
+            } finally {
+                if (uncaught) UNCAUGHT_DIALOG_OPEN.set(false);
+            }
         };
 
-        if (SwingUtilities.isEventDispatchThread()) {
-            showTask.run();
-        } else {
-            SwingUtilities.invokeLater(showTask);
+        try {
+            if (SwingUtilities.isEventDispatchThread()) showTask.run();
+            else SwingUtilities.invokeLater(showTask);
+        } catch (Throwable schedulingFailure) {
+            if (uncaught) UNCAUGHT_DIALOG_OPEN.set(false);
+            ErrorReporter.report("安排消息弹窗失败", schedulingFailure);
         }
     }
 

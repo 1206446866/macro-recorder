@@ -81,6 +81,7 @@ public final class AppConfigSafetyTest {
         byte[] before = Files.readAllBytes(file);
         var modified = Files.getLastModifiedTime(file);
         Set<String> entries = entries(directory);
+        entries.add("log");
         Properties memory = new Properties();
         memory.putAll(properties(config));
         Captured<Boolean> result = capture(() -> config.updateSettings(null, null, true, true, 90,
@@ -91,6 +92,12 @@ public final class AppConfigSafetyTest {
                         && modified.equals(Files.getLastModifiedTime(file)), "失败破坏或替换了原配置");
         check(properties(config).equals(memory), "保存失败未恢复原有内存设置");
         check(entries(directory).equals(entries), "失败清理误删已有文件或遗留新临时文件");
+        try (var reports = Files.list(directory.resolve("log"))) {
+            check(reports.anyMatch(path -> {
+                try { return Files.readString(path).contains(diagnostic); }
+                catch (IOException failure) { throw new AssertionError(failure); }
+            }), "配置失败未保留详细错误报告");
+        }
         System.out.print(result.error());
     }
 

@@ -7,6 +7,7 @@ import java.awt.Rectangle;
 import java.awt.image.BufferedImage;
 import java.util.List;
 import java.util.Random;
+import java.util.function.BooleanSupplier;
 
 /** 纯内存图像及受控浮点误差回归；不截图、不访问用户素材、不发送输入。 */
 public final class OpenCvPerfectThresholdTest {
@@ -139,10 +140,10 @@ public final class OpenCvPerfectThresholdTest {
         try {
             scores.put(0, 0, new float[]{error});
             var collection = OpenCvTemplateMatcher.class.getDeclaredMethod("collectResults", Mat.class,
-                    BufferedImage.class, BufferedImage.class, conversion.getReturnType(), double.class, int.class);
+                    BufferedImage.class, BufferedImage.class, conversion.getReturnType(), double.class, int.class, BooleanSupplier.class);
             collection.setAccessible(true);
             return (OpenCvTemplateMatcher.SearchResult) collection.invoke(
-                    MATCHER, scores, source, template, data, threshold, 10);
+                    MATCHER, scores, source, template, data, threshold, 10, (BooleanSupplier) () -> false);
         } finally {
             scores.release();
             maskMat.release();

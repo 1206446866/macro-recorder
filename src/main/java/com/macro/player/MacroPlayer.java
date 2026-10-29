@@ -6,6 +6,7 @@ import com.macro.flow.ImageMatchResult;
 import com.macro.flow.ImageMatchStatus;
 import com.macro.flow.ImageMatcher;
 import com.macro.flow.ImageCheckBehavior;
+import com.macro.flow.ImageCheckConfig;
 import com.macro.flow.MacroFlowFactory;
 import com.macro.flow.MacroBranch;
 import com.macro.flow.MacroFlow;
@@ -25,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CancellationException;
 import java.util.function.Consumer;
 
 
@@ -204,6 +206,7 @@ public class MacroPlayer {
             }
         }
 
+        if (imageMatcher != null) imageMatcher.beginPlayback();
         FlowContext context = new FlowContext();
         state = PlayerState.PLAYING;
         int currentLoop = 0;
@@ -260,6 +263,7 @@ public class MacroPlayer {
                                         + "\nSimilarity: " + ImageRecognitionDiagnostics.similarity(
                                                 context.getLastImageMatch().getSimilarity())
                                         + "\nMatchBounds: " + context.getLastImageMatch().getMatchBounds());
+                        behavior = behavior.flowBehavior();
                         if (behavior == ImageCheckBehavior.TERMINATE) {
                             ImageRecognitionDiagnostics.log("PLAYBACK", "TERMINATE",
                                     "NodeId: " + node.getId() + "\nScope: ENTIRE_PLAYBACK_TASK");
@@ -345,13 +349,22 @@ public class MacroPlayer {
                                     + node.getId()
                     );
                 }
-                ImageMatchResult imageMatch = imageMatcher.match(node, context);
+                ImageMatchResult imageMatch;
+                try {
+                    imageMatch = imageMatcher.match(node, context, () -> state == PlayerState.STOPPING);
+                } catch (CancellationException cancelled) {
+                    if (state == PlayerState.STOPPING) yield null;
+                    throw cancelled;
+                }
                 if (imageMatch == null) {
                     throw new IllegalStateException(
                             "ImageMatcher 未返回有效结果：" + node.getId()
                     );
                 }
                 context.setLastImageMatch(imageMatch);
+                if (node.getImageCheckConfig().behaviorFor(imageMatch.isFound()).requiresClick()) {
+                    if (!clickMatchedImage(node.getImageCheckConfig(), imageMatch)) yield null;
+                }
                 notifyProgress(loop, node.getId(), PlaybackProgress.Phase.NODE_COMPLETED);
                 if (!waitForDelay(0L)) {
                     yield null;
@@ -450,11 +463,13 @@ public class MacroPlayer {
             if (node.getType() == NodeType.ACTION) {
                 validateRequiredBranch(node, NodeResult.ALWAYS);
             } else if (node.getType() == NodeType.IMAGE_CHECK) {
-                if (node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.EXECUTE
+                node.getImageCheckConfig().validateClickBehaviors();
+                node.getImageCheckConfig().validateSearchScope();
+                if (node.getImageCheckConfig().getSuccessBehavior().flowBehavior() == ImageCheckBehavior.EXECUTE
                         || node.getImageCheckConfig().getSuccessBehavior() == ImageCheckBehavior.JUMP) {
                     validateRequiredBranch(node, NodeResult.FOUND);
                 }
-                if (node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.EXECUTE
+                if (node.getImageCheckConfig().getFailureBehavior().flowBehavior() == ImageCheckBehavior.EXECUTE
                         || node.getImageCheckConfig().getFailureBehavior() == ImageCheckBehavior.JUMP) {
                     validateRequiredBranch(node, NodeResult.NOT_FOUND);
                 }
@@ -614,7 +629,9 @@ public class MacroPlayer {
                         Runnable listener = onPauseReached;
                         if (listener != null) {
                             try { listener.run(); }
-                            catch (RuntimeException failure) { failure.printStackTrace(System.err); }
+                            catch (RuntimeException failure) {
+                                com.macro.diagnostics.ErrorReporter.report("通知播放暂停失败", failure);
+                            }
                         }
                     }
                     // 回调可能重新进入暂停锁并继续/停止，不能错过它的唤醒。
@@ -662,8 +679,25 @@ public class MacroPlayer {
             listener.accept(new PlaybackProgress(loop, nodeId, phase));
         } catch (RuntimeException failure) {
             // 界面进度失败不能改变宏的执行顺序、停止或输入清理。
-            failure.printStackTrace(System.err);
+            com.macro.diagnostics.ErrorReporter.report("通知播放进度失败", failure);
         }
+    }
+
+    /** 成功按本次命中范围选点，失败按独立屏幕坐标；共用暂停/停止和输入释放保护。 */
+    private boolean clickMatchedImage(ImageCheckConfig config,
+                                      ImageMatchResult match) throws InterruptedException {
+        if (!waitForDelay(0L)) return false;
+        java.awt.Point point = match.isFound() ? config.getClickMode().pointWithin(match.getMatchBounds())
+                : new java.awt.Point(config.getFailureClickX(), config.getFailureClickY());
+        robot.mouseMove(point.x, point.y);
+        if (!waitForDelay(0L)) return false;
+        int mask = InputEvent.BUTTON1_DOWN_MASK;
+        // 先跟踪按下状态；正常或异常退出都沿用播放器的输入释放保护。
+        pressedMouseButtons.add(mask);
+        robot.mousePress(mask);
+        robot.mouseRelease(mask);
+        pressedMouseButtons.remove(mask);
+        return waitForDelay(0L);
     }
 
     /** 执行一个已经校验过的现有宏动作。 */
@@ -731,8 +765,7 @@ public class MacroPlayer {
             try {
                 robot.mouseRelease(mask);
             } catch (RuntimeException e) {
-                System.getLogger(MacroPlayer.class.getName()).log(
-                        System.Logger.Level.WARNING, "释放鼠标按钮失败：" + mask, e);
+                com.macro.diagnostics.ErrorReporter.report("释放鼠标按钮失败：" + mask, e);
             }
         }
 
@@ -742,8 +775,7 @@ public class MacroPlayer {
             try {
                 robot.keyRelease(keyCode);
             } catch (RuntimeException e) {
-                System.getLogger(MacroPlayer.class.getName()).log(
-                        System.Logger.Level.WARNING, "释放键盘按键失败：" + keyCode, e);
+                com.macro.diagnostics.ErrorReporter.report("释放键盘按键失败：" + keyCode, e);
             }
         }
 

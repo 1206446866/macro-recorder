@@ -1,0 +1,86 @@
+[
+  {
+    "path": "licenses/tess4j-LICENSE.txt",
+    "bytes": 11523,
+    "sha256": "de556eb1415648cc1bba68d1e602d8a54e3e5b3592770df34d863449e8f0303c",
+    "source": "https://raw.githubusercontent.com/nguyenq/tess4j/7a585050d1e30f1f1ceb60d9132f2440f527f51f/LICENSE",
+    "gitBlob": "abd540fd6942248915c74dcc8e1b0da0257e55b5"
+  },
+  {
+    "path": "licenses/lept4j-LICENSE.txt",
+    "bytes": 11560,
+    "sha256": "2e54cd84a645bea25943c75dd8ae67cb291e66a47a11578333c9b4b3b6b86c85",
+    "source": "https://raw.githubusercontent.com/nguyenq/lept4j/cec7e267a427b9226451a5ed8232be8badd6dac2/LICENSE",
+    "gitBlob": "113e84387d76083ddd734bcfeb75f87c848d172b"
+  },
+  {
+    "path": "tessdata/chi_sim.traineddata",
+    "bytes": 2469156,
+    "sha256": "a5fcb6f0db1e1d6d8522f39db4e848f05984669172e584e8d76b6b3141e1f730",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/chi_sim.traineddata",
+    "gitBlob": "388bac276d033d06e5ed5ba7a7ad14ae58f97dab"
+  },
+  {
+    "path": "tessdata/chi_tra.traineddata",
+    "bytes": 2366642,
+    "sha256": "529c5b5797d64b126065cd55f2bb4c7fd7b15790798091b1ff259941a829330b",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/chi_tra.traineddata",
+    "gitBlob": "1955cd8b8d076b898616e9c2c1ace65b43105356"
+  },
+  {
+    "path": "tessdata/eng.traineddata",
+    "bytes": 4113088,
+    "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/eng.traineddata",
+    "gitBlob": "bbef4675053b5b468cdb477053e28b1c698ba08e"
+  },
+  {
+    "path": "tessdata/jpn.traineddata",
+    "bytes": 2471260,
+    "sha256": "1f5de9236d2e85f5fdf4b3c500f2d4926f8d9449f28f5394472d9e8d83b91b4d",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/jpn.traineddata",
+    "gitBlob": "c4178f89991bde90b7fdc647e3e1901868423bd0"
+  },
+  {
+    "path": "tessdata/kor.traineddata",
+    "bytes": 1677415,
+    "sha256": "6b85e11d9bbf07863b97b3523b1b112844c43e713df8b66418a081fd1060b3b2",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/kor.traineddata",
+    "gitBlob": "60986d44497689f3abace0b148199476d93292e1"
+  },
+  {
+    "path": "licenses/tessdata-LICENSE.txt",
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/LICENSE",
+    "gitBlob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+  },
+  {
+    "path": "licenses/tesseract-LICENSE.txt",
+    "bytes": 11358,
+    "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tesseract/5.5.3/LICENSE",
+    "gitBlob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
+  },
+  {
+    "path": "licenses/leptonica-LICENSE.txt",
+    "bytes": 1521,
+    "sha256": "87829abb5bbb00b55a107365da89e9a33f86c4250169e5a1e5588505be7d5806",
+    "source": "https://raw.githubusercontent.com/DanBloomberg/leptonica/1.87.0/leptonica-license.txt",
+    "gitBlob": "73d44c601c0746534128804c3fb0b93772897f82"
+  },
+  {
+    "path": "native/libtesseract534.dll",
+    "bytes": 3110912,
+    "sha256": "10dcfcaa21faa72ef331d43fbe9a265b451f2c31a3bcfbb69741fc485c69f6ed",
+    "source": "https://raw.githubusercontent.com/nguyenq/tess4j/6d4179d3b0553a2572d97806282f91bdaf8fc2dd/src/main/resources/win32-x86-64/libtesseract534.dll",
+    "gitBlob": "e5e2c3900fac81add2c6f21e045d38eb0c00976f"
+  },
+  {
+    "path": "native/libleptonica1841.dll",
+    "bytes": 4142592,
+    "sha256": "0b2cb584baeb38b90033344b4d70830b33ba01396fb9142b9b733e83c8a73fb8",
+    "source": "https://raw.githubusercontent.com/nguyenq/lept4j/0f5174c9c74fdbc7d092ceafa958cfc68fd0bac8/src/main/resources/win32-x86-64/libleptonica1841.dll",
+    "gitBlob": "a1ee431e55cb74dd2762c553c2d826d3056a3292"
+  }
+]

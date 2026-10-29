@@ -1,6 +1,7 @@
 package com.macro.ui;
 
 import com.macro.config.TimelineInsertPosition;
+import com.macro.constant.UiConstants;
 import com.macro.flow.BranchCondition;
 import com.macro.flow.ImageCheckConfig;
 import com.macro.flow.ImageCheckBehavior;
@@ -23,7 +24,7 @@ import javax.swing.*;
 import javax.swing.border.EmptyBorder;
 import javax.swing.plaf.basic.BasicMenuItemUI;
 import java.awt.*;
-import java.awt.datatransfer.StringSelection;
+import java.awt.datatransfer.Clipboard;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.awt.event.AWTEventListener;
@@ -34,6 +35,7 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.geom.Path2D;
 import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -47,6 +49,7 @@ import java.util.function.Consumer;
 import java.util.function.LongConsumer;
 import java.util.function.LongSupplier;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 
 /**
  * 支持横向滚动的流程节点时间线。
@@ -64,11 +67,15 @@ public class ActionTimelinePanel extends JPanel {
     private static final int SELF_LOOP_BOTTOM_OFFSET = 31;
     private static final int TIMELINE_VIEWPORT_WIDTH = 420;
     private static final int TIMELINE_VIEWPORT_HEIGHT = NODE_HEIGHT + 90;
+    private static final Color TEMPLATE_WARNING_COLOR = new Color(0xF2C94C);
 
     private final JPanel timelinePanel;
+    private final TimelineNodeDrag nodeDrag;
+    private final TimelineNodeSearch nodeSearch;
+    private long searchNavigationRevision;
     private final JLabel actionCountValue;
     private final JLabel totalDurationValue;
-    private final JLabel timelineEditHint = label("双击动作可编辑，单击坐标可直接修改", 12, false, THEME.textMuted());
+    private final JLabel timelineEditHint = label("拖动卡片调整顺序，双击编辑，单击坐标修改", 12, false, THEME.textMuted());
     private final JCheckBox standbyHeadCheckBox = new JCheckBox("增加待机头节点");
     @Setter
     private Predicate<Boolean> onStandbyHeadToggle = enabled -> true;
@@ -78,6 +85,8 @@ public class ActionTimelinePanel extends JPanel {
     private final List<MacroNode> nodes = new ArrayList<>();
     private java.util.Map<String, String> displayNumbers = java.util.Map.of();
     private final Map<String, NodePanel> nodePanels = new LinkedHashMap<>();
+    private final TemplateQualityWarnings templateQualityWarnings = new TemplateQualityWarnings();
+    private Supplier<File> templateBaseDirectorySupplier = () -> null;
     private final Set<String> completedNodeIds = new LinkedHashSet<>();
     @Getter
     private String currentPlaybackNodeId;
@@ -97,6 +106,12 @@ public class ActionTimelinePanel extends JPanel {
     @Getter
     private MacroNode selectedMacroNode;
     private NodePanel selectedNode;
+    private final Set<String> selectedNodeIds = new LinkedHashSet<>();
+    private String selectionAnchorId;
+    private final JPanel selectionToolbar = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+    private final JLabel selectionCount = label("", 12, true, THEME.accent());
+    private final JButton batchEditButton = new JButton("批量编辑");
+    private final JButton batchDeleteButton = new JButton("删除所选");
     /** 当前行内编辑会话；重建时间线前先取消，避免旧组件延迟提交。 */
     private InlineEditSession activeEdit;
     private long timelineRevision;
@@ -105,6 +120,8 @@ public class ActionTimelinePanel extends JPanel {
     private BooleanSupplier editPermission = () -> true;
     private boolean editingEnabled = true;
     private long editGeneration;
+    private final TimelineUndoHistory undoHistory = new TimelineUndoHistory();
+    private final TimelineNodeClipboard nodeClipboard;
 
     @Setter
     private Consumer<MacroNode> onActionSelected;
@@ -119,10 +136,24 @@ public class ActionTimelinePanel extends JPanel {
 
     /** 创建时间线统计、头部待机开关和可滚动轨道，安装选择、编辑与删除入口。 */
     public ActionTimelinePanel() {
+        this(() -> Toolkit.getDefaultToolkit().getSystemClipboard());
+    }
+
+    /** 隔离测试使用独立剪贴板，不改动系统内容。 */
+    ActionTimelinePanel(Clipboard clipboard) { this(() -> clipboard); }
+
+    private ActionTimelinePanel(Supplier<Clipboard> clipboardSupplier) {
+        nodeClipboard = new TimelineNodeClipboard(clipboardSupplier);
         setLayout(new BorderLayout(0, 18));
         setOpaque(false);
         setFocusable(true);
         installDeleteKeyBinding();
+        installUndoKeyBinding();
+        installNodeClipboardKeyBindings();
+        installSelectionKeyBindings();
+        installSearchKeyBindings();
+        nodeSearch = new TimelineNodeSearch(this::repaintSearchResults, this::scrollToSearchResult, this::closeNodeSearch);
+        timelineEditHint.setToolTipText("Ctrl 点选，Shift 连选，Ctrl+A 全选；Ctrl+Z 撤销最近一次修改");
 
         JPanel heading = new JPanel(new BorderLayout(0, 12));
         heading.setOpaque(false);
@@ -169,7 +200,34 @@ public class ActionTimelinePanel extends JPanel {
         hintPanel.setOpaque(false);
         hintPanel.add(new TimelineIcon(IconType.INFO, 16, THEME.textMuted()));
         hintPanel.add(timelineEditHint);
-        card.add(hintPanel, BorderLayout.NORTH);
+        JPanel trackHeader = new JPanel(new BorderLayout());
+        trackHeader.setOpaque(false);
+        JPanel trackTools = new JPanel(new BorderLayout(12, 0)); trackTools.setOpaque(false);
+        JButton findNodesButton = new JButton("查找节点");
+        ComponentStyleUtil.styleSecondaryButton(findNodesButton);
+        findNodesButton.setToolTipText("查找节点（Ctrl+F）");
+        findNodesButton.addActionListener(event -> openNodeSearch());
+        trackTools.add(findNodesButton, BorderLayout.WEST);
+        trackTools.add(hintPanel, BorderLayout.CENTER);
+        trackHeader.add(trackTools, BorderLayout.NORTH);
+        selectionToolbar.setOpaque(false);
+        selectionToolbar.add(selectionCount);
+        for (JButton button : List.of(batchEditButton, batchDeleteButton)) {
+            ComponentStyleUtil.styleSecondaryButton(button);
+            selectionToolbar.add(button);
+        }
+        JButton clearSelectionButton = new JButton("取消选择");
+        ComponentStyleUtil.styleSecondaryButton(clearSelectionButton);
+        clearSelectionButton.addActionListener(event -> clearSelection());
+        selectionToolbar.add(clearSelectionButton);
+        batchEditButton.addActionListener(event -> requestBatchEdit());
+        batchDeleteButton.addActionListener(event -> requestBatchDelete());
+        selectionToolbar.setVisible(false);
+        JPanel trackBars = new JPanel(); trackBars.setOpaque(false);
+        trackBars.setLayout(new BoxLayout(trackBars, BoxLayout.Y_AXIS));
+        trackBars.add(nodeSearch); trackBars.add(selectionToolbar);
+        trackHeader.add(trackBars, BorderLayout.SOUTH);
+        card.add(trackHeader, BorderLayout.NORTH);
 
         timelinePanel = new TimelineTrackPanel();
         timelinePanel.setOpaque(false);
@@ -186,12 +244,17 @@ public class ActionTimelinePanel extends JPanel {
         scrollPane.getViewport().setOpaque(false);
         ComponentStyleUtil.styleScrollPane(scrollPane);
         scrollPane.getHorizontalScrollBar().setUnitIncrement(20);
-        card.add(scrollPane, BorderLayout.CENTER);
+        nodeDrag = new TimelineNodeDrag(this, timelinePanel, scrollPane);
+        card.add(nodeDrag.layer(), BorderLayout.CENTER);
         add(card, BorderLayout.CENTER);
 
         addHierarchyListener(event -> {
-            if ((event.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0 && !isShowing()) {
-                cancelInlineEdit();
+            if ((event.getChangeFlags() & HierarchyEvent.SHOWING_CHANGED) != 0) {
+                if (isShowing()) refreshTemplateQualityWarnings();
+                else {
+                    cancelInlineEdit();
+                    nodeDrag.cancel(true);
+                }
             }
         });
 
@@ -203,6 +266,26 @@ public class ActionTimelinePanel extends JPanel {
         setFlow(MacroFlowFactory.fromActions(newActions));
     }
 
+    /** 使用与编辑器和播放器相同的 MR 目录解析相对模板路径。 */
+    public void setTemplateBaseDirectorySupplier(Supplier<File> supplier) {
+        templateBaseDirectorySupplier = Objects.requireNonNull(supplier);
+        refreshTemplateQualityWarnings();
+    }
+
+    private void refreshTemplateQualityWarnings() {
+        Map<String, String> paths = new LinkedHashMap<>();
+        for (MacroNode node : nodes) {
+            if (node.getType() == NodeType.IMAGE_CHECK) {
+                ImageCheckConfig config = node.getImageCheckConfig();
+                paths.put(node.getId(), config == null ? null : config.getImagePath());
+            }
+        }
+        templateQualityWarnings.refresh(paths, templateBaseDirectorySupplier.get(), (id, warning) -> {
+            NodePanel card = nodePanels.get(id);
+            if (card != null) card.setTemplateQualityWarning(warning);
+        });
+    }
+
     /** 每次写入时重新读取权限，不依赖异步状态通知是否已到达 EDT。 */
     public void setEditPermission(BooleanSupplier permission) {
         editPermission = Objects.requireNonNull(permission);
@@ -210,6 +293,7 @@ public class ActionTimelinePanel extends JPanel {
         if (!isEditingAllowed()) {
             editGeneration++;
             cancelInlineEdit();
+            nodeDrag.cancel(true);
         }
     }
 
@@ -219,7 +303,10 @@ public class ActionTimelinePanel extends JPanel {
             editingEnabled = enabled;
             editGeneration++;
         }
-        if (!enabled) cancelInlineEdit();
+        if (!enabled) {
+            cancelInlineEdit();
+            nodeDrag.cancel(true);
+        }
         updateEditingControls();
     }
 
@@ -228,8 +315,10 @@ public class ActionTimelinePanel extends JPanel {
         if (!isEditingAllowed()) return false;
         boolean currentlyEnabled = flow.getHeadWaitMillis() != null;
         if (enabled != currentlyEnabled) {
+            var before = captureUndoState();
             flow.setHeadWaitMillis(enabled ? MacroFlow.DEFAULT_HEAD_WAIT_MILLIS : null);
             rebuildTimeline();
+            undoHistory.record(before, flow);
             onFlowChanged.run();
         }
         standbyHeadCheckBox.setSelected(enabled);
@@ -245,7 +334,9 @@ public class ActionTimelinePanel extends JPanel {
     private void updateEditingControls() {
         boolean allowed = isEditingAllowed();
         standbyHeadCheckBox.setEnabled(allowed);
-        timelineEditHint.setText(allowed ? "双击动作可编辑，单击坐标可直接修改" : "当前仅可查看，可选择或复制；编辑已锁定");
+        timelineEditHint.setText(allowed ? "Ctrl 点选 / Shift 连选 · 拖动排序 · 双击编辑" : "当前仅可查看，可选择或复制；编辑已锁定");
+        batchEditButton.setEnabled(allowed && hasBatchEditableSelection());
+        batchDeleteButton.setEnabled(allowed);
     }
 
     /** 弹窗及确认操作跨越播放边界后，即使已经恢复空闲，也不再接受旧结果。 */
@@ -262,6 +353,16 @@ public class ActionTimelinePanel extends JPanel {
      * @param newFlow 待显示的流程图；为空时使用空流程
      */
     public void setFlow(MacroFlow newFlow) {
+        if (newFlow != flow) {
+            clearUndoHistory();
+            nodeSearch.reset();
+            searchNavigationRevision++;
+        }
+        displayFlow(newFlow);
+    }
+
+    private void displayFlow(MacroFlow newFlow) {
+        nodeDrag.cancel(false);
         if (newFlow != flow) clearPlaybackProgress();
         flow = newFlow == null
                 ? MacroFlowFactory.fromActions(List.of())
@@ -270,7 +371,107 @@ public class ActionTimelinePanel extends JPanel {
         nodes.addAll(MacroFlowFactory.timelineNodes(flow));
         selectedMacroNode = null;
         selectedNode = null;
+        selectedNodeIds.clear();
+        selectionAnchorId = null;
         rebuildTimeline();
+    }
+
+    private TimelineUndoHistory.Snapshot captureUndoState() {
+        return undoHistory.capture(flow, selectedMacroNode == null ? null : selectedMacroNode.getId(),
+                new ArrayList<>(selectedNodeIds), selectionAnchorId);
+    }
+
+    public boolean canUndo() { return isEditingAllowed() && undoHistory.peek() != null; }
+
+    public boolean canPasteNode() { return isEditingAllowed() && nodeClipboard.hasNode(); }
+
+    /** 复制确认时的独立快照；播放查看期间也可复制当前节点。 */
+    boolean copyNode(MacroNode node) throws IOException {
+        if (node == null || nodes.stream().noneMatch(current -> current == node)) return false;
+        nodeClipboard.copy(node, templateBaseDirectorySupplier.get(), getNodeName(node) + " · " + getNodeDetail(node));
+        return true;
+    }
+
+    /** 选中节点后粘贴，没有锚点时追加；一次粘贴对应一步撤销。 */
+    boolean pasteNode(MacroNode anchor) throws IOException {
+        if (!isEditingAllowed()) return false;
+        int index = nodes.size();
+        if (anchor != null) {
+            index = -1;
+            for (int i = 0; i < nodes.size(); i++) if (nodes.get(i) == anchor) { index = i + 1; break; }
+            if (index < 0) return false;
+        }
+        List<MacroNode> pastedNodes = nodeClipboard.readNodes(templateBaseDirectorySupplier.get());
+        if (pastedNodes.isEmpty()) return false;
+        Map<String, String> newIds = new LinkedHashMap<>();
+        for (MacroNode pasted : pastedNodes) newIds.put(pasted.getId(), MacroFlowFactory.newNodeId());
+        for (MacroNode pasted : pastedNodes) if (pasted.getType() == NodeType.IMAGE_CHECK) {
+            for (BranchCondition result : List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND)) {
+                if (pasted.getImageCheckConfig().behaviorFor(result == BranchCondition.FOUND) != ImageCheckBehavior.JUMP) continue;
+                var branch = MacroFlowFactory.branchFor(pasted, result);
+                MacroNode target = branch == null ? null : flow.getNodeMap().get(branch.getTargetId());
+                boolean internal = pastedNodes.size() > 1 && branch != null && newIds.containsKey(branch.getTargetId());
+                if (!internal && (target == null || target.getType() == NodeType.END))
+                    throw new IllegalArgumentException("原跳转目标不在当前宏中，无法粘贴该图像节点。请先在来源宏中调整跳转行为。");
+                if (internal) branch.setTargetId(newIds.get(branch.getTargetId()));
+            }
+        }
+        var before = captureUndoState();
+        selectedNodeIds.clear();
+        for (MacroNode pasted : pastedNodes) {
+            pasted.setId(newIds.get(pasted.getId()));
+            selectedNodeIds.add(pasted.getId());
+        }
+        nodes.addAll(index, pastedNodes);
+        selectedMacroNode = pastedNodes.get(pastedNodes.size() - 1);
+        selectionAnchorId = pastedNodes.get(0).getId();
+        rebuildFlowGraph();
+        rebuildTimeline();
+        undoHistory.record(before, flow);
+        onFlowChanged.run();
+        return true;
+    }
+
+    private void requestNodeClipboardAction(MacroNode node, boolean copy) {
+        try {
+            if (copy && node != null && selectedNodeIds.contains(node.getId()) && selectedNodeIds.size() > 1) {
+                List<MacroNode> selection = getSelectedNodes();
+                nodeClipboard.copy(selection, templateBaseDirectorySupplier.get(), String.join(System.lineSeparator(),
+                        selection.stream().map(current -> getNodeName(current) + " · " + getNodeDetail(current)).toList()));
+            } else if (copy) copyNode(node); else pasteNode(node);
+        }
+        catch (IOException | IllegalArgumentException | IllegalStateException exception) {
+            AppMessageDialog.showWarning(this, (copy ? "复制节点失败：" : "粘贴节点失败：") + exception.getMessage(), exception);
+        }
+    }
+
+    /** 切换宏或改变模板路径基准时丢弃旧记录，不能撤回到其他文件上下文。 */
+    public void clearUndoHistory() {
+        undoHistory.clear();
+        editGeneration++;
+    }
+
+    /** 恢复完整流程与选择，按 ID 保留分支关系；旧编辑器和确认回调立即失效。 */
+    public boolean undo() {
+        if (!canUndo()) return false;
+        var snapshot = undoHistory.peek();
+        MacroFlow previous = undoHistory.restore(snapshot);
+        boolean previousHead = previous.getHeadWaitMillis() != null;
+        if (previousHead != (flow.getHeadWaitMillis() != null)
+                && !onStandbyHeadToggle.test(previousHead)) return false;
+        if (!isEditingAllowed()) return false;
+        cancelInlineEdit();
+        nodeDrag.cancel(true);
+        undoHistory.removeLast();
+        editGeneration++;
+        displayFlow(previous);
+        selectedNodeIds.addAll(snapshot.selectedIds());
+        selectionAnchorId = snapshot.anchorId();
+        selectedMacroNode = previous.getNodeMap().get(snapshot.selectedId());
+        updateSelection();
+        onFlowChanged.run();
+        requestFocusInWindow();
+        return true;
     }
 
     /** 返回已完成节点 ID 的只读快照，避免外部直接修改进度状态。 */
@@ -324,11 +525,7 @@ public class ActionTimelinePanel extends JPanel {
 
     /** 重建当前节点视图后恢复仍存在的选择，不改变流程执行顺序。 */
     public void refreshTimeline() {
-        MacroNode previousSelection = selectedMacroNode;
         rebuildTimeline();
-        if (previousSelection != null) {
-            selectMacroNode(previousSelection);
-        }
     }
 
     /** 仅在允许编辑时删除目标节点，按用户选项把普通动作延迟保留给后项，再重建流程和视图。 */
@@ -337,6 +534,7 @@ public class ActionTimelinePanel extends JPanel {
             return false;
         }
         MacroNode node = nodes.get(index);
+        var before = captureUndoState();
         if (preserveDelay
                 && node.getType() == NodeType.ACTION
                 && index < nodes.size() - 1) {
@@ -354,6 +552,7 @@ public class ActionTimelinePanel extends JPanel {
         }
         rebuildFlowGraph();
         rebuildTimeline();
+        undoHistory.record(before, flow);
         return true;
     }
 
@@ -396,6 +595,7 @@ public class ActionTimelinePanel extends JPanel {
     /** 为新节点分配稳定 ID，在指定位置插入并重建分支视图，最后选中新节点。 */
     private boolean insertAt(int index, MacroNode newNode) {
         if (!isEditingAllowed()) return false;
+        var before = captureUndoState();
         newNode.setId(MacroFlowFactory.newNodeId());
         nodes.add(index, newNode);
         selectedMacroNode = newNode;
@@ -403,6 +603,7 @@ public class ActionTimelinePanel extends JPanel {
         rebuildFlowGraph();
         rebuildTimeline();
         selectMacroNode(newNode);
+        undoHistory.record(before, flow);
         return true;
     }
 
@@ -419,6 +620,7 @@ public class ActionTimelinePanel extends JPanel {
             return false;
         }
 
+        var before = captureUndoState();
         newNode.setId(originalNode.getId());
         nodes.set(actionIndex, newNode);
         selectedMacroNode = newNode;
@@ -426,8 +628,143 @@ public class ActionTimelinePanel extends JPanel {
         rebuildFlowGraph();
         rebuildTimeline();
         selectMacroNode(newNode);
+        undoHistory.record(before, flow);
         return true;
     }
+
+    /** 移到最终的零基位置，保留节点身份、动作延迟和指定跳转；仅重接默认后继。 */
+    public boolean moveNode(MacroNode node, int targetIndex) {
+        return node != null && moveNodes(List.of(node), targetIndex);
+    }
+
+    /** 所选节点按原顺序聚为一组；位置是移除该组后剩余节点中的插入位置。 */
+    boolean moveNodes(List<MacroNode> targets, int targetIndex) {
+        if (!isEditingAllowed() || !validTargets(targets) || targetIndex < 0
+                || targetIndex > nodes.size() - targets.size()) return false;
+        List<MacroNode> group = nodes.stream().filter(targets::contains).toList();
+        List<MacroNode> order = new ArrayList<>(nodes);
+        order.removeAll(group);
+        order.addAll(targetIndex, group);
+        if (order.equals(nodes)) return false;
+        var before = captureUndoState();
+        nodeDrag.cancel(false);
+        nodes.clear();
+        nodes.addAll(order);
+        selectedNodeIds.clear();
+        group.forEach(node -> selectedNodeIds.add(node.getId()));
+        if (selectedMacroNode == null || !selectedNodeIds.contains(selectedMacroNode.getId())) selectedMacroNode = group.get(0);
+        selectionAnchorId = selectedMacroNode.getId();
+        rebuildFlowGraph();
+        rebuildTimeline();
+        undoHistory.record(before, flow);
+        onFlowChanged.run();
+        return true;
+    }
+
+    /** 拖动只改变组件排列，不提前写入流程、编号或分支。 */
+    void previewNodeMove(MacroNode node, int targetIndex) {
+        previewNodesMove(List.of(node), targetIndex);
+    }
+
+    void previewNodesMove(List<MacroNode> group, int targetIndex) {
+        List<MacroNode> preview = new ArrayList<>(nodes);
+        preview.removeAll(group);
+        preview.addAll(targetIndex, group);
+        renderNodeOrder(preview);
+    }
+
+    /** 返回时间线顺序的只读选择；主选中节点仍供单节点编辑、插入及粘贴定位。 */
+    public List<MacroNode> getSelectedNodes() {
+        return nodes.stream().filter(node -> selectedNodeIds.contains(node.getId())).toList();
+    }
+
+    JComponent nodeCard(MacroNode node) { return nodePanels.get(node.getId()); }
+
+    private boolean validTargets(List<MacroNode> targets) {
+        return targets != null && !targets.isEmpty() && targets.size() == targets.stream().distinct().count()
+                && targets.stream().allMatch(target -> nodes.stream().anyMatch(node -> node == target));
+    }
+
+    /** 只写入明确勾选的字段；图像重试间隔仅应用于具有重试行为的节点。 */
+    boolean applyBatchEdits(List<MacroNode> targets, Long actionDelay, Long retryDelay) {
+        if (!isEditingAllowed() || !validTargets(targets)) return false;
+        if (actionDelay != null && actionDelay < 0 || retryDelay != null && retryDelay < 0)
+            throw new IllegalArgumentException("延迟不能小于 0");
+        var before = captureUndoState();
+        boolean changed = false;
+        for (MacroNode node : targets) {
+            if (actionDelay != null && node.getType() == NodeType.ACTION && node.getAction().getDelay() != actionDelay) {
+                node.getAction().setDelay(actionDelay);
+                changed = true;
+            }
+            if (retryDelay != null && hasRetry(node) && MacroFlowFactory.findRetryDelay(node) != retryDelay) {
+                node.getImageCheckConfig().setRetryDelay(retryDelay);
+                changed = true;
+            }
+        }
+        if (!changed) return false;
+        rebuildFlowGraph();
+        rebuildTimeline();
+        undoHistory.record(before, flow);
+        onFlowChanged.run();
+        return true;
+    }
+
+    private boolean hasRetry(MacroNode node) {
+        return node.getType() == NodeType.IMAGE_CHECK && (!behaviorConditions(node, ImageCheckBehavior.RETRY).isEmpty());
+    }
+
+    private boolean hasBatchEditableSelection() {
+        return getSelectedNodes().stream().anyMatch(node -> node.getType() == NodeType.ACTION || hasRetry(node));
+    }
+
+    /** 整批删除只记一次撤销；指定跳转保留原目标 ID，目标被删时由现有校验报告。 */
+    boolean deleteNodes(List<MacroNode> targets) {
+        if (!isEditingAllowed() || !validTargets(targets)) return false;
+        var before = captureUndoState();
+        nodes.removeAll(targets);
+        rebuildFlowGraph();
+        rebuildTimeline();
+        undoHistory.record(before, flow);
+        onFlowChanged.run();
+        return true;
+    }
+
+    private void requestBatchEdit() {
+        if (!isEditingAllowed()) return;
+        List<MacroNode> targets = getSelectedNodes();
+        if (targets.size() < 2 || !hasBatchEditableSelection()) return;
+        long revision = timelineRevision;
+        Consumer<TimelineBatchEditDialog.Values> apply = guardEditCallback(values -> {
+            if (revision == timelineRevision) applyBatchEdits(targets, values.actionDelay(), values.retryDelay());
+        });
+        TimelineBatchEditDialog dialog = new TimelineBatchEditDialog(SwingUtilities.getWindowAncestor(this),
+                targets.size(), (int) targets.stream().filter(node -> node.getType() == NodeType.ACTION).count(),
+                (int) targets.stream().filter(this::hasRetry).count(), apply);
+        dialog.setVisible(true);
+    }
+
+    private void requestBatchDelete() {
+        if (!isEditingAllowed()) return;
+        List<MacroNode> targets = getSelectedNodes();
+        if (targets.size() < 2) return;
+        long revision = timelineRevision;
+        Set<String> ids = targets.stream().map(MacroNode::getId).collect(java.util.stream.Collectors.toSet());
+        long incoming = nodes.stream().filter(node -> !ids.contains(node.getId()) && node.getType() == NodeType.IMAGE_CHECK)
+                .flatMap(node -> node.getChildren().stream().filter(branch ->
+                        (branch.getCondition() == BranchCondition.FOUND || branch.getCondition() == BranchCondition.NOT_FOUND)
+                        && node.getImageCheckConfig().behaviorFor(branch.getCondition() == BranchCondition.FOUND) == ImageCheckBehavior.JUMP))
+                .filter(branch -> ids.contains(branch.getTargetId())).count();
+        Consumer<Boolean> confirm = guardEditCallback(confirmed -> {
+            if (confirmed && revision == timelineRevision) deleteNodes(targets);
+        });
+        confirm.accept(AppMessageDialog.showConfirm(this, "批量删除", "确定删除选中的 " + targets.size()
+                + " 个节点吗？\n不合并动作延迟，可按 Ctrl+Z 撤销。" + (incoming == 0 ? "" : "\n其他图像节点指向这些节点的跳转将失效，请重新指定目标。")));
+    }
+
+    void restoreNodeOrder() { renderNodeOrder(nodes); }
+
+    void prepareNodeDrag() { cancelInlineEdit(); requestFocusInWindow(); }
 
     /** 按当前显示顺序重建 ACTION、IMAGE_CHECK 和 END 的默认分支。 */
     private void rebuildFlowGraph() {
@@ -440,6 +777,7 @@ public class ActionTimelinePanel extends JPanel {
 
     /** 取消旧行内编辑，按当前节点顺序重建卡片、编号和连接器，并刷新轨道尺寸及统计。 */
     private void rebuildTimeline() {
+        nodeDrag.cancel(false);
         cancelInlineEdit();
         timelineRevision++;
         timelinePanel.removeAll();
@@ -454,12 +792,22 @@ public class ActionTimelinePanel extends JPanel {
         timelinePanel.setBorder(new EmptyBorder(10, 50, branchCount == 0 ? 80 : 110 + branchCount * 32, 50));
         updateSummary();
 
+        renderNodeOrder(nodes);
+        updateSelection();
+        nodeSearch.refresh(nodes);
+        refreshTemplateQualityWarnings();
+    }
+
+    /** 正常刷新和拖动预览共用卡片对象；连接器依据预览顺序显示后项延迟。 */
+    private void renderNodeOrder(List<MacroNode> order) {
+        timelinePanel.removeAll();
         if (flow.getHeadWaitMillis() != null) {
-            timelinePanel.add(createStandbyHead());
-            if (!nodes.isEmpty()) timelinePanel.add(createStandbyHeadConnector());
+            if (standbyHeadCard == null) standbyHeadCard = createStandbyHead();
+            timelinePanel.add(standbyHeadCard);
+            if (!order.isEmpty()) timelinePanel.add(createStandbyHeadConnector());
         }
 
-        if (nodes.isEmpty()) {
+        if (order.isEmpty()) {
             JPanel empty = new JPanel();
             empty.setOpaque(false);
             empty.setLayout(new BoxLayout(empty, BoxLayout.Y_AXIS));
@@ -477,12 +825,14 @@ public class ActionTimelinePanel extends JPanel {
             timelinePanel.add(Box.createHorizontalGlue());
         } else {
             timelinePanel.add(Box.createHorizontalStrut(4));
-            for (int index = 0; index < nodes.size(); index++) {
-                MacroNode node = nodes.get(index);
-                timelinePanel.add(createActionNode(node, displayNumbers.get(node.getId())));
-                if (index < nodes.size() - 1) {
+            for (int index = 0; index < order.size(); index++) {
+                MacroNode node = order.get(index);
+                NodePanel card = nodePanels.get(node.getId());
+                if (card == null) card = createActionNode(node, displayNumbers.get(node.getId()));
+                timelinePanel.add(card);
+                if (index < order.size() - 1) {
                     // 延迟属于后一个动作，表示当前节点与后一个节点之间的等待时间。
-                    timelinePanel.add(createDelayConnector(node, nodes.get(index + 1)));
+                    timelinePanel.add(createDelayConnector(node, order.get(index + 1)));
                 } else if (node.getType() == NodeType.IMAGE_CHECK
                         && !behaviorConditions(node, ImageCheckBehavior.EXECUTE).isEmpty()) {
                     timelinePanel.add(createDelayConnector(node, null));
@@ -613,11 +963,15 @@ public class ActionTimelinePanel extends JPanel {
         node.add(Box.createVerticalGlue());
 
         MouseAdapter listener = new MouseAdapter() {
+            private boolean collapseOnRelease;
             /** 左键选中当前节点，并兼容在按下阶段触发的系统右键菜单。 */
             @Override
             public void mousePressed(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)) {
-                    selectNode(node, macroNode);
+                    collapseOnRelease = !event.isControlDown() && !event.isShiftDown()
+                            && selectedNodeIds.contains(macroNode.getId()) && selectedNodeIds.size() > 1;
+                    selectWithModifiers(macroNode, event.isControlDown(), event.isShiftDown(), true);
+                    if (!event.isControlDown() && !event.isShiftDown()) nodeDrag.arm(macroNode, node, event);
                 }
                 maybeShowPopup(event, node, macroNode);
             }
@@ -625,6 +979,9 @@ public class ActionTimelinePanel extends JPanel {
             /** 兼容在释放阶段触发的系统右键菜单。 */
             @Override
             public void mouseReleased(MouseEvent event) {
+                if (SwingUtilities.isLeftMouseButton(event) && collapseOnRelease && !nodeDrag.suppressesClick())
+                    selectNode(node, macroNode);
+                collapseOnRelease = false;
                 maybeShowPopup(event, node, macroNode);
             }
 
@@ -632,6 +989,7 @@ public class ActionTimelinePanel extends JPanel {
             @Override
             public void mouseClicked(MouseEvent event) {
                 if (SwingUtilities.isLeftMouseButton(event)
+                        && !nodeDrag.suppressesClick()
                         && event.getClickCount() == 2
                         && isEditingAllowed()
                         && onActionDoubleClicked != null) {
@@ -642,9 +1000,9 @@ public class ActionTimelinePanel extends JPanel {
         node.addMouseListener(listener);
         installPopupListener(node, listener);
 
-        if (macroNode == selectedMacroNode) {
+        if (selectedNodeIds.contains(macroNode.getId())) {
             node.setSelected(true);
-            selectedNode = node;
+            if (macroNode == selectedMacroNode) selectedNode = node;
         }
         nodePanels.put(macroNode.getId(), node);
         return node;
@@ -700,9 +1058,9 @@ public class ActionTimelinePanel extends JPanel {
     private static String behaviorConditions(MacroNode node, ImageCheckBehavior behavior) {
         ImageCheckConfig config = node.getImageCheckConfig();
         boolean success = (config == null ? ImageCheckBehavior.EXECUTE
-                : config.getSuccessBehavior()) == behavior;
+                : config.getSuccessBehavior().flowBehavior()) == behavior;
         boolean failure = (config == null ? ImageCheckBehavior.RETRY
-                : config.getFailureBehavior()) == behavior;
+                : config.getFailureBehavior().flowBehavior()) == behavior;
         return success && failure ? "成功 / 未找到"
                 : success ? "识别成功" : failure ? "未找到" : "";
     }
@@ -716,6 +1074,7 @@ public class ActionTimelinePanel extends JPanel {
             for (BranchCondition condition : List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND)) {
                 ImageCheckBehavior behavior = condition == BranchCondition.FOUND
                         ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
+                behavior = behavior.flowBehavior();
                 if (behavior != ImageCheckBehavior.JUMP && behavior != ImageCheckBehavior.EXECUTE) continue;
                 var branch = MacroFlowFactory.branchFor(node, condition);
                 if (branch == null) continue;
@@ -723,9 +1082,14 @@ public class ActionTimelinePanel extends JPanel {
                 int targetIndex = -1;
                 for (int j = 0; j < nodes.size(); j++) if (Objects.equals(nodes.get(j).getId(), target)) { targetIndex = j; break; }
                 if (targetIndex < 0 || targetIndex == i || behavior == ImageCheckBehavior.EXECUTE && targetIndex == i + 1) continue;
+                boolean forward = targetIndex > i;
+                if (nodeDrag.isActive()) {
+                    NodePanel sourceCard = nodePanels.get(node.getId()), targetCard = nodePanels.get(target);
+                    if (sourceCard != null && targetCard != null) forward = targetCard.getX() > sourceCard.getX();
+                }
                 result.add(new TimelineBranchLayout.Edge(node.getId(), target,
                         (condition == BranchCondition.FOUND ? "成功" : "未找到") + " · "
-                                + (targetIndex > i ? "前跳" : "回跳") + " " + displayNumbers.get(target)));
+                                + (forward ? "前跳" : "回跳") + " " + displayNumbers.get(target)));
             }
         }
         return result;
@@ -737,7 +1101,7 @@ public class ActionTimelinePanel extends JPanel {
         ImageCheckBehavior behavior = condition == BranchCondition.FOUND
                 ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
         var branch = MacroFlowFactory.branchFor(node, condition);
-        return behavior == ImageCheckBehavior.EXECUTE && branch != null && Objects.equals(branch.getTargetId(), targetId);
+        return behavior.flowBehavior() == ImageCheckBehavior.EXECUTE && branch != null && Objects.equals(branch.getTargetId(), targetId);
     }
 
     /** 创建相邻节点的等待文字和水平箭头，图像分支仅对实际默认后继显示主链。 */
@@ -752,35 +1116,34 @@ public class ActionTimelinePanel extends JPanel {
         connector.setMaximumSize(new Dimension(imageBranch ? connectorWidth : 100, NODE_HEIGHT));
         connector.setAlignmentY(Component.TOP_ALIGNMENT);
 
+        String conditions = "执行";
         if (imageBranch) {
             String nextId = macroNode == null ? MacroFlowFactory.findEndId(flow) : macroNode.getId();
             boolean success = defaultBranchTo(previousNode, BranchCondition.FOUND, nextId);
             boolean failure = defaultBranchTo(previousNode, BranchCondition.NOT_FOUND, nextId);
-            String conditions = success && failure ? "成功 / 未找到" : success ? "识别成功" : failure ? "未找到" : "";
+            conditions = success && failure ? "成功 / 未找到" : success ? "识别成功" : failure ? "未找到" : "";
             if (conditions.isEmpty()) {
                 // 没有执行分支时保留节点间距，但不能绘制通向后续节点的箭头。
                 return connector;
             }
-            connector.add(Box.createVerticalGlue());
+        }
+        connector.add(Box.createVerticalGlue());
+        if (imageBranch || macroNode != null && macroNode.getType() == NodeType.IMAGE_CHECK) {
             JLabel condition = label(conditions, 11, false, THEME.accent());
             condition.setAlignmentX(CENTER_ALIGNMENT);
             connector.add(condition);
             connector.add(Box.createVerticalStrut(4));
-        } else {
-            connector.add(Box.createVerticalGlue());
         }
 
         MacroAction action = macroNode != null && macroNode.getType() == NodeType.ACTION
                 ? macroNode.getAction()
                 : null;
-        JLabel delay = label(
-                macroNode == null ? "本轮结束" : action == null ? "检查" : formatDelay(action.getDelay()),
-                11,
-                false,
-                THEME.textSecondary()
-        );
+        JLabel delay = macroNode != null && action == null ? createImageEntryDelayLabel(previousNode, macroNode)
+                : label(macroNode == null ? "本轮结束" : formatDelay(action.getDelay()),
+                        11, false, THEME.textSecondary());
         delay.setAlignmentX(CENTER_ALIGNMENT);
-        delay.setToolTipText(action == null ? "图像识别节点" : "单击编辑动作间隔");
+        if (macroNode == null) delay.setToolTipText("当前执行分支到达本轮结束");
+        else if (action != null) delay.setToolTipText("单击编辑动作间隔");
         if (action != null) {
             delay.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
         }
@@ -803,6 +1166,26 @@ public class ActionTimelinePanel extends JPanel {
             });
         }
         return connector;
+    }
+
+    /** 图像节点没有普通动作 delay，显示实际入向分支等待，不借用重试间隔。 */
+    private JLabel createImageEntryDelayLabel(MacroNode previousNode, MacroNode imageNode) {
+        Set<Long> delays = new LinkedHashSet<>();
+        StringBuilder hint = new StringBuilder("<html>进入图像识别前的分支等待");
+        for (BranchCondition condition : previousNode.getType() == NodeType.IMAGE_CHECK
+                ? List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND) : List.of(BranchCondition.ALWAYS)) {
+            if (condition != BranchCondition.ALWAYS && !defaultBranchTo(previousNode, condition, imageNode.getId())) continue;
+            var branch = MacroFlowFactory.branchFor(previousNode, condition);
+            if (branch == null || !Objects.equals(branch.getTargetId(), imageNode.getId())) continue;
+            long delay = Math.max(0L, branch.getDelay());
+            delays.add(delay);
+            hint.append("<br>").append(condition == BranchCondition.FOUND ? "识别成功" : condition == BranchCondition.NOT_FOUND ? "未找到" : "执行")
+                    .append("：").append(formatDelay(delay));
+        }
+        String text = delays.stream().map(String::valueOf).reduce((left, right) -> left + " / " + right).orElse("0") + " ms";
+        JLabel label = label(text, 11, false, THEME.textSecondary());
+        label.setToolTipText(hint.append("<br>重试间隔单独显示在图像节点下方的回路</html>").toString());
+        return label;
     }
 
     /** 在原延迟文字位置放入数字输入，提交后调用指定数据写入器，再恢复原连接器。 */
@@ -909,6 +1292,7 @@ public class ActionTimelinePanel extends JPanel {
     /** 时间线离开显示层级前取消行内编辑并移除临时监听，避免旧回调继续写入。 */
     @Override
     public void removeNotify() {
+        nodeDrag.cancel(true);
         cancelInlineEdit();
         super.removeNotify();
     }
@@ -995,8 +1379,10 @@ public class ActionTimelinePanel extends JPanel {
                 return true;
             }
             finish();
+            var before = captureUndoState();
             setter.accept(value);
             restore.run();
+            undoHistory.record(before, flow);
             return true;
         }
 
@@ -1050,7 +1436,7 @@ public class ActionTimelinePanel extends JPanel {
     /** 仅在系统判定为菜单触发时选中对应节点，并在原鼠标位置显示菜单。 */
     private void maybeShowPopup(MouseEvent event, NodePanel node, MacroNode macroNode) {
         if (!event.isPopupTrigger()) return;
-        selectNode(node, macroNode);
+        selectWithModifiers(macroNode, false, false, true);
         createContextMenu(macroNode).show(
                 event.getComponent(),
                 event.getX(),
@@ -1060,18 +1446,31 @@ public class ActionTimelinePanel extends JPanel {
 
     /** 按节点是否存在和当前编辑权限创建编辑、插入、删除或复制菜单，并保护迟到回调。 */
     private JPopupMenu createContextMenu(MacroNode macroNode) {
-        JPopupMenu menu = new JPopupMenu();
-        menu.setOpaque(true);
-        menu.setBackground(THEME.targetCard());
-        menu.setBorder(BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(THEME.border()),
-                new EmptyBorder(5, 5, 5, 5)
-        ));
+        JPopupMenu menu = new JPopupMenu() {
+            @Override protected void paintComponent(Graphics graphics) {
+                Graphics2D g = (Graphics2D) graphics.create();
+                try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setColor(THEME.card());
+                    g.fillRoundRect(0, 0, getWidth(), getHeight(), 20, 20);
+                    g.setColor(THEME.border());
+                    g.drawRoundRect(0, 0, getWidth() - 1, getHeight() - 1, 20, 20);
+                } finally { g.dispose(); }
+            }
+        };
+        menu.setOpaque(false);
+        menu.setBackground(THEME.card());
+        menu.setBorder(new EmptyBorder(8, 8, 8, 8));
+        menu.setLayout(new GridBagLayout());
 
-        JMenuItem edit = createMenuItem("编辑动作", IconType.EDIT);
-        edit.setEnabled(isEditingAllowed());
+        boolean multiple = macroNode != null && selectedNodeIds.contains(macroNode.getId()) && selectedNodeIds.size() > 1;
+        List<MacroNode> menuSelection = getSelectedNodes();
+        long menuRevision = timelineRevision;
+        JMenuItem edit = createMenuItem(multiple ? "批量编辑" : "编辑动作", IconType.EDIT);
+        edit.setEnabled(isEditingAllowed() && (!multiple || hasBatchEditableSelection()));
         Consumer<java.awt.event.ActionEvent> editRequest = guardEditCallback(event -> {
-            if (onActionEditRequested != null) onActionEditRequested.accept(macroNode);
+            if (multiple) { if (menuRevision == timelineRevision && menuSelection.equals(getSelectedNodes())) requestBatchEdit(); }
+            else if (onActionEditRequested != null) onActionEditRequested.accept(macroNode);
         });
         edit.addActionListener(editRequest::accept);
         JMenuItem insert = createMenuItem("插入动作", IconType.INSERT);
@@ -1080,50 +1479,125 @@ public class ActionTimelinePanel extends JPanel {
             if (onActionInsertRequested != null) onActionInsertRequested.accept(macroNode);
         });
         insert.addActionListener(insertRequest::accept);
-        JMenuItem delete = createMenuItem("删除动作", IconType.DELETE);
+        JMenuItem delete = createMenuItem(multiple ? "删除所选" : "删除动作", IconType.DELETE);
         delete.setEnabled(isEditingAllowed());
-        Consumer<java.awt.event.ActionEvent> deleteRequest = guardEditCallback(event -> deleteAndNotify(macroNode));
+        Consumer<java.awt.event.ActionEvent> deleteRequest = guardEditCallback(event -> {
+            if (multiple) { if (menuRevision == timelineRevision && menuSelection.equals(getSelectedNodes())) requestBatchDelete(); }
+            else deleteAndNotify(macroNode);
+        });
         delete.addActionListener(deleteRequest::accept);
-        JMenuItem copy = createMenuItem("复制信息", IconType.COPY);
-        copy.addActionListener(event -> copyActionInfo(macroNode));
+        JMenuItem copy = createMenuItem(multiple ? "复制所选" : "复制节点", IconType.COPY);
+        copy.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_C, KeyEvent.CTRL_DOWN_MASK));
+        copy.setToolTipText("复制节点（Ctrl+C），也可在普通文本框粘贴节点信息");
+        copy.addActionListener(event -> {
+            if (!multiple || menuRevision == timelineRevision && menuSelection.equals(getSelectedNodes())) requestNodeClipboardAction(macroNode, true);
+        });
 
         if (macroNode == null) {
-            menu.add(insert);
+            addMenuCell(menu, insert, 0, 0, 1);
+            addMenuCell(menu, createPasteMenuItem(null, false), 1, 0, 1);
+            addMenuCell(menu, createUndoMenuItem(true), 0, 1, 2);
             return menu;
         }
-        menu.add(edit);
-        menu.add(insert);
-        menu.add(delete);
-        menu.add(copy);
+        addMenuCell(menu, edit, 0, 0, 1);
+        addMenuCell(menu, insert, 1, 0, 1);
+        addMenuCell(menu, copy, 0, 1, 1);
+        addMenuCell(menu, delete, 1, 1, 1);
+        addMenuCell(menu, createPasteMenuItem(macroNode, true), 0, 2, 1);
+        addMenuCell(menu, createUndoMenuItem(true), 1, 2, 1);
         return menu;
     }
 
-    /** 创建主题一致的时间线菜单项，使用轻量图标和统一间距。 */
+    /** 菜单项保持直属 PopupMenu，保留 Swing 的选择、Enter、Esc 和辅助功能。 */
+    private void addMenuCell(JPopupMenu menu, JMenuItem item, int column, int row, int span) {
+        GridBagConstraints c = new GridBagConstraints();
+        c.gridx = column; c.gridy = row; c.gridwidth = span;
+        c.weightx = 1; c.fill = GridBagConstraints.BOTH;
+        c.insets = new Insets(span == 2 ? 6 : 4, 4, 4, 4);
+        menu.add(item, c);
+    }
+
+    private JMenuItem createUndoMenuItem(boolean footer) {
+        JMenuItem undo = createMenuItem("撤销", IconType.UNDO, footer);
+        undo.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_DOWN_MASK));
+        undo.setEnabled(canUndo());
+        Consumer<java.awt.event.ActionEvent> request = guardEditCallback(event -> undo());
+        undo.addActionListener(request::accept);
+        return undo;
+    }
+
+    private JMenuItem createPasteMenuItem(MacroNode anchor, boolean footer) {
+        JMenuItem paste = createMenuItem(footer ? "粘贴" : "粘贴节点", IconType.PASTE, footer);
+        paste.setAccelerator(KeyStroke.getKeyStroke(KeyEvent.VK_V, KeyEvent.CTRL_DOWN_MASK));
+        paste.setToolTipText(anchor == null ? "追加复制的节点（Ctrl+V）" : "粘贴到此节点后面（Ctrl+V）");
+        paste.setEnabled(canPasteNode());
+        Consumer<java.awt.event.ActionEvent> request = guardEditCallback(event -> requestNodeClipboardAction(anchor, false));
+        paste.addActionListener(request::accept);
+        return paste;
+    }
+
     private JMenuItem createMenuItem(String text, IconType iconType) {
-        JMenuItem item = new JMenuItem(text, new TimelineIcon(iconType, 16, THEME.textPrimary()));
-        item.setFont(item.getFont().deriveFont(Font.PLAIN, 13f));
+        return createMenuItem(text, iconType, false);
+    }
+
+    /** 图标居上的操作宫格；保留 JMenuItem 原生菜单行为，只替换绘制。 */
+    private JMenuItem createMenuItem(String text, IconType iconType, boolean footer) {
+        JMenuItem item = new JMenuItem(text);
+        item.setFont(new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 13));
         item.setForeground(THEME.textPrimary());
-        item.setBackground(THEME.targetCard());
-        item.setBorder(new EmptyBorder(8, 9, 8, 18));
-        item.setOpaque(true);
+        item.setOpaque(false);
+        item.setBorder(new EmptyBorder(0, 0, 0, 0));
+        item.setPreferredSize(new Dimension(116, footer ? 44 : 84));
+        Color accent = iconType == IconType.DELETE ? THEME.danger() : THEME.accent();
+        TimelineIcon normalIcon = new TimelineIcon(iconType, footer ? 17 : 24, accent);
+        TimelineIcon disabledIcon = new TimelineIcon(iconType, footer ? 17 : 24, THEME.textMuted());
         item.setUI(new BasicMenuItemUI() {
-            /** 沿用菜单基础设置，再覆盖选中背景及文字颜色为当前深色主题。 */
-            @Override
-            protected void installDefaults() {
-                super.installDefaults();
-                selectionBackground = THEME.controlBackground();
-                selectionForeground = THEME.textPrimary();
+            @Override public void paint(Graphics graphics, JComponent component) {
+                Graphics2D g = (Graphics2D) graphics.create();
+                try {
+                    g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setRenderingHint(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+                    boolean enabled = item.isEnabled();
+                    boolean highlighted = enabled && (item.isArmed() || item.getModel().isRollover());
+                    Color surface = footer ? THEME.targetCard() : THEME.controlBackground();
+                    if (highlighted) surface = blend(surface, accent, item.getModel().isPressed() ? .24f : .13f);
+                    g.setColor(surface);
+                    g.fillRoundRect(0, 0, item.getWidth(), item.getHeight(), 12, 12);
+                    g.setColor(highlighted ? blend(THEME.border(), accent, .6f) : THEME.border());
+                    g.drawRoundRect(0, 0, item.getWidth() - 1, item.getHeight() - 1, 12, 12);
+                    Color foreground = !enabled ? THEME.textMuted()
+                            : highlighted && iconType == IconType.DELETE ? THEME.dangerHover() : THEME.textPrimary();
+                    TimelineIcon icon = enabled ? normalIcon : disabledIcon;
+                    g.setFont(item.getFont());
+                    FontMetrics metrics = g.getFontMetrics();
+                    if (footer) {
+                        icon.paintIcon(item, g, 12, (item.getHeight() - 17) / 2);
+                        g.setColor(foreground);
+                        boolean compact = item.getWidth() < 180;
+                        g.drawString(text, 38, compact ? 19 : (item.getHeight() - metrics.getHeight()) / 2 + metrics.getAscent());
+                        g.setFont(item.getFont().deriveFont(10f));
+                        String shortcut = "Ctrl+" + KeyEvent.getKeyText(item.getAccelerator().getKeyCode());
+                        FontMetrics small = g.getFontMetrics();
+                        if (compact) {
+                            g.setColor(enabled ? THEME.textSecondary() : THEME.textMuted());
+                            g.drawString(shortcut, 38, 35);
+                            return;
+                        }
+                        int chipWidth = small.stringWidth(shortcut) + 16;
+                        int chipX = item.getWidth() - chipWidth - 10;
+                        g.setColor(THEME.controlBackground());
+                        g.fillRoundRect(chipX, (item.getHeight() - 22) / 2, chipWidth, 22, 7, 7);
+                        g.setColor(enabled ? THEME.textSecondary() : THEME.textMuted());
+                        g.drawString(shortcut, chipX + 8, (item.getHeight() - small.getHeight()) / 2 + small.getAscent());
+                    } else {
+                        icon.paintIcon(item, g, (item.getWidth() - 24) / 2, 15);
+                        g.setColor(foreground);
+                        g.drawString(text, (item.getWidth() - metrics.stringWidth(text)) / 2, 63);
+                    }
+                } finally { g.dispose(); }
             }
         });
         return item;
-    }
-
-    /** 将节点的可读名称和参数复制到剪贴板，不修改流程数据。 */
-    private void copyActionInfo(MacroNode macroNode) {
-        String info = getNodeName(macroNode)
-                + " · "
-                + getNodeDetail(macroNode);
-        Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(info), null);
     }
 
     /** 通过统一节点删除入口处理删除，并在成功后通知主窗口同步宏信息。 */
@@ -1155,34 +1629,176 @@ public class ActionTimelinePanel extends JPanel {
 
     /** 更新旧卡片与新卡片的选中状态，并让时间线取得键盘操作焦点。 */
     private void selectNode(NodePanel node, MacroNode macroNode) {
-        if (selectedNode != null && selectedNode != node) {
-            selectedNode.setSelected(false);
-        }
-        selectedNode = node;
+        selectedNodeIds.clear();
+        selectedNodeIds.add(macroNode.getId());
+        selectionAnchorId = macroNode.getId();
         selectedMacroNode = macroNode;
-        node.setSelected(true);
+        updateSelection();
         requestFocusInWindow();
         if (onActionSelected != null) {
             onActionSelected.accept(macroNode);
         }
     }
 
-    /** 仅在时间线面板自身获得焦点时响应 Delete。 */
+    /** Shift 以最近一次普通/Ctrl 点击为锚点；Ctrl+Shift 把区间加入现有选择。 */
+    void selectWithModifiers(MacroNode node, boolean control, boolean shift, boolean keepGroup) {
+        if (nodes.stream().noneMatch(current -> current == node)) return;
+        if (shift) {
+            int anchor = 0;
+            for (int i = 0; i < nodes.size(); i++) if (nodes.get(i).getId().equals(selectionAnchorId)) { anchor = i; break; }
+            int end = nodes.indexOf(node);
+            if (!control) selectedNodeIds.clear();
+            for (int i = Math.min(anchor, end); i <= Math.max(anchor, end); i++) selectedNodeIds.add(nodes.get(i).getId());
+            if (selectionAnchorId == null) selectionAnchorId = nodes.get(anchor).getId();
+        } else if (control) {
+            if (!selectedNodeIds.remove(node.getId())) selectedNodeIds.add(node.getId());
+            selectionAnchorId = node.getId();
+        } else {
+            if (!keepGroup || !selectedNodeIds.contains(node.getId())) selectedNodeIds.clear();
+            selectedNodeIds.add(node.getId());
+            selectionAnchorId = node.getId();
+        }
+        selectedMacroNode = selectedNodeIds.contains(node.getId()) ? node : null;
+        updateSelection();
+        requestFocusInWindow();
+        if (onActionSelected != null) onActionSelected.accept(selectedMacroNode);
+    }
+
+    void clearSelection() {
+        selectedNodeIds.clear();
+        selectedMacroNode = null;
+        selectionAnchorId = null;
+        updateSelection();
+        requestFocusInWindow();
+    }
+
+    private void updateSelection() {
+        selectedNodeIds.retainAll(nodes.stream().map(MacroNode::getId).toList());
+        if (selectedMacroNode == null || !selectedNodeIds.contains(selectedMacroNode.getId()))
+            selectedMacroNode = getSelectedNodes().stream().findFirst().orElse(null);
+        selectedNode = selectedMacroNode == null ? null : nodePanels.get(selectedMacroNode.getId());
+        nodePanels.forEach((id, card) -> card.setSelected(selectedNodeIds.contains(id)));
+        selectionCount.setText("已选 " + selectedNodeIds.size() + " 个节点");
+        batchEditButton.setEnabled(isEditingAllowed() && hasBatchEditableSelection());
+        batchEditButton.setToolTipText(hasBatchEditableSelection() ? "统一设置普通动作延迟或图像重试间隔"
+                : "所选节点没有普通动作或图像重试间隔可修改");
+        selectionToolbar.setVisible(selectedNodeIds.size() > 1);
+        selectionToolbar.revalidate();
+    }
+
+    private void installSelectionKeyBindings() {
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_A, KeyEvent.CTRL_DOWN_MASK), "selectAllTimelineNodes");
+        getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(KeyEvent.VK_A, KeyEvent.CTRL_DOWN_MASK), "selectAllTimelineNodes");
+        getActionMap().put("selectAllTimelineNodes", new AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof javax.swing.text.JTextComponent) return;
+                nodes.forEach(node -> selectedNodeIds.add(node.getId()));
+                if (!nodes.isEmpty()) selectionAnchorId = nodes.get(0).getId();
+                updateSelection();
+            }
+        });
+        getInputMap(WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "clearTimelineSelection");
+        getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), "clearTimelineSelection");
+        getActionMap().put("clearTimelineSelection", new AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                if (!(KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof javax.swing.text.JTextComponent)) {
+                    if (nodeSearch.isVisible()) closeNodeSearch(); else clearSelection();
+                }
+            }
+        });
+    }
+
+    private void openNodeSearch() {
+        cancelInlineEdit(); nodeDrag.cancel(true);
+        nodeSearch.open();
+    }
+
+    private void closeNodeSearch() {
+        searchNavigationRevision++;
+        nodeSearch.close();
+        requestFocusInWindow();
+    }
+
+    private void repaintSearchResults() {
+        nodePanels.values().forEach(Component::repaint);
+    }
+
+    /** 等布局完成再定位；连续输入、关闭、换宏或重建后不执行过时的滚动请求。 */
+    private void scrollToSearchResult(String id) {
+        nodeDrag.cancel(true);
+        long navigation = ++searchNavigationRevision;
+        long revision = timelineRevision;
+        SwingUtilities.invokeLater(() -> {
+            if (navigation != searchNavigationRevision || revision != timelineRevision
+                    || !Objects.equals(id, nodeSearch.currentId())) return;
+            NodePanel card = nodePanels.get(id);
+            if (card != null) card.scrollRectToVisible(new Rectangle(0, 0, card.getWidth(), card.getHeight()));
+        });
+    }
+
+    private void installSearchKeyBindings() {
+        for (int direction : new int[]{0, 1, -1}) {
+            String name = direction == 0 ? "findTimelineNode" : direction > 0 ? "findNextTimelineNode" : "findPreviousTimelineNode";
+            KeyStroke key = direction == 0 ? KeyStroke.getKeyStroke(KeyEvent.VK_F, KeyEvent.CTRL_DOWN_MASK)
+                    : KeyStroke.getKeyStroke(KeyEvent.VK_F3, direction < 0 ? KeyEvent.SHIFT_DOWN_MASK : 0);
+            getInputMap(WHEN_FOCUSED).put(key, name);
+            getInputMap(WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(key, name);
+            getActionMap().put(name, new AbstractAction() {
+                @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                    if (direction == 0 || !nodeSearch.isVisible()) openNodeSearch(); else nodeSearch.navigate(direction);
+                }
+            });
+        }
+    }
+
+    /** 时间线及批量按钮内响应 Delete，文字输入框保留自身删除行为。 */
     private void installDeleteKeyBinding() {
         String actionKey = "deleteSelectedTimelineAction";
         getInputMap(JComponent.WHEN_FOCUSED).put(
                 KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0),
                 actionKey
         );
+        getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), actionKey);
         getActionMap().put(actionKey, new AbstractAction() {
             /** 收到时间线 Delete 绑定后删除当前选中节点，仍由统一删除入口检查权限。 */
             @Override
             public void actionPerformed(java.awt.event.ActionEvent event) {
+                if (KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner() instanceof javax.swing.text.JTextComponent) return;
                 if (selectedMacroNode != null) {
-                    deleteAndNotify(selectedMacroNode);
+                    if (getSelectedNodes().size() > 1) requestBatchDelete();
+                    else deleteAndNotify(selectedMacroNode);
                 }
             }
         });
+    }
+
+    /** 只在时间线及其子控件中响应，输入框保留自己的文字编辑行为。 */
+    private void installUndoKeyBinding() {
+        String actionKey = "undoTimelineEdit";
+        KeyStroke key = KeyStroke.getKeyStroke(KeyEvent.VK_Z, KeyEvent.CTRL_DOWN_MASK);
+        getInputMap(JComponent.WHEN_FOCUSED).put(key, actionKey);
+        getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(key, actionKey);
+        getActionMap().put(actionKey, new AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                Component focus = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+                if (!(focus instanceof javax.swing.text.JTextComponent)) undo();
+            }
+        });
+    }
+
+    private void installNodeClipboardKeyBindings() {
+        for (boolean copy : new boolean[]{true, false}) {
+            String actionKey = copy ? "copyTimelineNode" : "pasteTimelineNode";
+            KeyStroke key = KeyStroke.getKeyStroke(copy ? KeyEvent.VK_C : KeyEvent.VK_V, KeyEvent.CTRL_DOWN_MASK);
+            getInputMap(JComponent.WHEN_FOCUSED).put(key, actionKey);
+            getInputMap(JComponent.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT).put(key, actionKey);
+            getActionMap().put(actionKey, new AbstractAction() {
+                @Override public void actionPerformed(java.awt.event.ActionEvent event) {
+                    Component focus = KeyboardFocusManager.getCurrentKeyboardFocusManager().getFocusOwner();
+                    if (!(focus instanceof javax.swing.text.JTextComponent)) requestNodeClipboardAction(selectedMacroNode, copy);
+                }
+            });
+        }
     }
 
     /** 按真实节点数量和动作等待计算统计，头部待机计入总时长并避免加法溢出。 */
@@ -1344,7 +1960,7 @@ public class ActionTimelinePanel extends JPanel {
                 /** 单击坐标标签时尝试开始编辑。 */
                 @Override
                 public void mouseClicked(MouseEvent event) {
-                    if (SwingUtilities.isLeftMouseButton(event)) {
+                    if (SwingUtilities.isLeftMouseButton(event) && !event.isControlDown() && !event.isShiftDown()) {
                         beginEdit();
                     }
                 }
@@ -1353,7 +1969,7 @@ public class ActionTimelinePanel extends JPanel {
                 @Override
                 public void mousePressed(MouseEvent event) {
                     if (SwingUtilities.isLeftMouseButton(event)) {
-                        selectParentNode();
+                        selectParentNode(event);
                     }
                     showCoordinatePopup(event);
                 }
@@ -1370,19 +1986,19 @@ public class ActionTimelinePanel extends JPanel {
                     Container parent = CoordinateEditor.this.getParent();
                     while (parent != null && !(parent instanceof NodePanel)) parent = parent.getParent();
                     if (parent instanceof NodePanel node) {
-                        selectNode(node, node.macroNode);
+                        selectWithModifiers(node.macroNode, false, false, true);
                         createContextMenu(node.macroNode).show(event.getComponent(), event.getX(), event.getY());
                     }
                 }
 
                 /** 选择坐标编辑器所属的动作节点。 */
-                private void selectParentNode() {
+                private void selectParentNode(MouseEvent event) {
                     Container parent = CoordinateEditor.this.getParent();
                     while (parent != null && !(parent instanceof NodePanel)) {
                         parent = parent.getParent();
                     }
                     if (parent instanceof NodePanel node) {
-                        selectNode(node, node.macroNode);
+                        selectWithModifiers(node.macroNode, event.isControlDown(), event.isShiftDown(), false);
                     }
                 }
             };
@@ -1460,10 +2076,30 @@ public class ActionTimelinePanel extends JPanel {
         private boolean selected;
         private MacroNode macroNode;
         private String displayNumber;
+        private String templateQualityWarning;
 
         /** 创建由卡片自身绘制主题背景的透明节点容器。 */
         private NodePanel() {
             setOpaque(false);
+        }
+
+        /** 拖动源在预览位置充当占位卡，真实内容由上层半透明影像展示。 */
+        @Override public void paint(Graphics graphics) {
+            if (!nodeDrag.isDragging(macroNode)) { super.paint(graphics); return; }
+            Graphics2D g2 = (Graphics2D) graphics.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                g2.setColor(withAlpha(THEME.accent(), 24));
+                g2.fillRoundRect(3, 3, getWidth() - 6, getHeight() - 6, 15, 15);
+                g2.setColor(THEME.accent());
+                g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
+                        1f, new float[]{6f, 5f}, 0));
+                g2.drawRoundRect(3, 3, getWidth() - 7, getHeight() - 7, 15, 15);
+                String text = "放置到 " + String.format(Locale.ROOT, "%02d", nodeDrag.previewIndex(macroNode) + 1);
+                g2.setFont(getFont().deriveFont(Font.BOLD, 13f));
+                FontMetrics metrics = g2.getFontMetrics();
+                g2.drawString(text, (getWidth() - metrics.stringWidth(text)) / 2, getHeight() / 2);
+            } finally { g2.dispose(); }
         }
 
         /** 记录卡片选中状态并请求重绘，不重新计算节点数据。 */
@@ -1472,22 +2108,65 @@ public class ActionTimelinePanel extends JPanel {
             repaint();
         }
 
+        private void setTemplateQualityWarning(String warning) {
+            templateQualityWarning = warning;
+            setToolTipText(warning);
+            getAccessibleContext().setAccessibleDescription(warning);
+            repaint();
+        }
+
+        private Rectangle warningBounds() {
+            return new Rectangle(getWidth() - 26, 7, 18, 18);
+        }
+
+        /** 只有黄色三角区域显示质量提示，保留其他控件原有提示和鼠标事件。 */
+        @Override public String getToolTipText(MouseEvent event) {
+            return templateQualityWarning != null && warningBounds().contains(event.getPoint())
+                    ? templateQualityWarning : null;
+        }
+
+        @Override public JToolTip createToolTip() {
+            JToolTip tip = super.createToolTip();
+            tip.setBackground(THEME.controlBackground());
+            tip.setForeground(THEME.textPrimary());
+            tip.setFont(new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.PLAIN, 12));
+            tip.setBorder(BorderFactory.createCompoundBorder(BorderFactory.createLineBorder(THEME.border()),
+                    new EmptyBorder(8, 10, 8, 10)));
+            return tip;
+        }
+
         /** 叠加绘制，不增加子组件、边距或布局占位。 */
         @Override
         protected void paintChildren(Graphics graphics) {
             super.paintChildren(graphics);
-            if (displayNumber == null || displayNumber.isEmpty()) return;
             Graphics2D g2 = (Graphics2D) graphics.create();
             try {
                 g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                g2.setFont(getFont().deriveFont(Font.BOLD, 10f));
-                FontMetrics metrics = g2.getFontMetrics();
-                int width = metrics.stringWidth(displayNumber) + 12;
-                g2.setColor(selected ? blend(THEME.controlBackground(), THEME.accent(), .18f)
-                        : THEME.controlBackground());
-                g2.fillRoundRect(8, 7, width, 18, 8, 8);
-                g2.setColor(selected ? THEME.textPrimary() : THEME.textSecondary());
-                g2.drawString(displayNumber, 14, 7 + (18 - metrics.getHeight()) / 2 + metrics.getAscent());
+                if (displayNumber != null && !displayNumber.isEmpty()) {
+                    g2.setFont(getFont().deriveFont(Font.BOLD, 10f));
+                    FontMetrics metrics = g2.getFontMetrics();
+                    int width = metrics.stringWidth(displayNumber) + 12;
+                    g2.setColor(selected ? blend(THEME.controlBackground(), THEME.accent(), .18f)
+                            : THEME.controlBackground());
+                    g2.fillRoundRect(8, 7, width, 18, 8, 8);
+                    g2.setColor(selected ? THEME.textPrimary() : THEME.textSecondary());
+                    g2.drawString(displayNumber, 14, 7 + (18 - metrics.getHeight()) / 2 + metrics.getAscent());
+                }
+                if (templateQualityWarning != null) {
+                    Rectangle bounds = warningBounds();
+                    g2.translate(bounds.x, bounds.y);
+                    Path2D triangle = new Path2D.Double();
+                    triangle.moveTo(9, .5);
+                    triangle.lineTo(17.5, 17);
+                    triangle.lineTo(.5, 17);
+                    triangle.closePath();
+                    g2.setColor(TEMPLATE_WARNING_COLOR);
+                    g2.fill(triangle);
+                    g2.setColor(new Color(0x30270E));
+                    g2.setStroke(new BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND));
+                    g2.drawLine(9, 6, 9, 10);
+                    g2.fillOval(8, 13, 2, 2);
+                }
             } finally { g2.dispose(); }
         }
 
@@ -1512,6 +2191,11 @@ public class ActionTimelinePanel extends JPanel {
             }
             paintPlaybackDecoration(g2, getWidth(), getHeight(), completedNodeIds.contains(macroNode.getId()),
                     Objects.equals(currentPlaybackNodeId, macroNode.getId()), THEME);
+            if (Objects.equals(nodeSearch.currentId(), macroNode.getId())) {
+                g2.setColor(TEMPLATE_WARNING_COLOR);
+                g2.setStroke(new BasicStroke(2f));
+                g2.drawRoundRect(1, 1, getWidth() - 3, getHeight() - 3, 17, 17);
+            }
             g2.dispose();
             super.paintComponent(graphics);
         }
@@ -1589,7 +2273,7 @@ public class ActionTimelinePanel extends JPanel {
                 public void mousePressed(MouseEvent event) {
                     if (SwingUtilities.isLeftMouseButton(event)) {
                         NodePanel hit = retryNodeAt(event.getPoint());
-                        if (hit == null) ActionTimelinePanel.this.requestFocusInWindow();
+                        if (hit == null) { if (!event.isControlDown() && !event.isShiftDown()) clearSelection(); }
                         else beginRetryDelayEdit(hit.macroNode);
                     }
                     showBackgroundPopup(event);
@@ -1886,6 +2570,8 @@ public class ActionTimelinePanel extends JPanel {
         INSERT,
         DELETE,
         COPY,
+        PASTE,
+        UNDO,
         EMPTY
     }
 
@@ -1975,6 +2661,17 @@ public class ActionTimelinePanel extends JPanel {
                 case COPY -> {
                     g2.drawRoundRect(1, 1, size - 6, size - 6, 3, 3);
                     g2.drawRoundRect(5, 5, size - 6, size - 6, 3, 3);
+                }
+                case PASTE -> {
+                    g2.drawRoundRect(size / 4, size / 5, size * 2 / 3 - 2, size * 3 / 4, 3, 3);
+                    g2.drawRoundRect(size / 3, 1, size / 3, size / 5, 2, 2);
+                    g2.drawLine(size / 2, size / 2, size * 3 / 4, size / 2);
+                    g2.drawLine(size / 2, size * 2 / 3, size * 3 / 4, size * 2 / 3);
+                }
+                case UNDO -> {
+                    g2.drawArc(3, size / 4, size - 6, size * 2 / 3, -45, 235);
+                    g2.drawLine(3, size / 4, 3, size / 2);
+                    g2.drawLine(3, size / 2, size / 3 + 2, size / 2);
                 }
                 case EMPTY -> {
                     g2.drawRoundRect(2, size / 4, size - 5, size / 2, 6, 6);

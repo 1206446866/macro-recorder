@@ -182,7 +182,8 @@ public final class WindowsSingleInstance implements AutoCloseable {
                 User32.INSTANCE.DispatchMessage(message);
             }
         } catch (Throwable failure) {
-            if (!ready.completeExceptionally(failure)) failure.printStackTrace(System.err);
+            if (!ready.completeExceptionally(failure))
+                com.macro.diagnostics.ErrorReporter.report("单实例通知线程失败", failure);
         } finally {
             if (messageWindow != null) User32.INSTANCE.DestroyWindow(messageWindow);
             messageWindow = null;
@@ -200,7 +201,7 @@ public final class WindowsSingleInstance implements AutoCloseable {
                     onActivate.run();
                 } catch (Throwable failure) {
                     // 异常不得穿过原生回调，也不能令已有实例丢失保护。
-                    failure.printStackTrace(System.err);
+                    com.macro.diagnostics.ErrorReporter.report("唤起已有窗口失败", failure);
                 }
             }
             return new LRESULT(0);

@@ -9,6 +9,7 @@ import com.macro.recognition.OpenCvPerfectThresholdTest;
 import com.macro.recorder.RecordingControlInputFilterTest;
 import com.macro.recorder.RecordingMouseCoordinatesTest;
 import com.macro.recorder.RecordingPauseTest;
+import com.macro.recorder.RecordingCaptureReleaseTest;
 import com.macro.storage.MacroStorageFailureTest;
 import com.macro.ui.TimelineEditingTest;
 import com.macro.ui.TimelinePlaybackProtectionTest;
@@ -26,6 +27,17 @@ import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /** 为已审查的独立回归检查提供标准入口，不启动其他桌面测试。 */
 class LegacyRegressionTest {
+    @Test
+    void errorReporting() throws Exception {
+        LegacyMainRunner.run(com.macro.diagnostics.ErrorReportingIntegrationTest.class, true);
+    }
+
+    @Test
+    @EnabledOnOs(value = OS.WINDOWS, disabledReason = "录制过滤器依赖 Windows 事件计时")
+    void recordingCaptureRelease() throws Exception {
+        LegacyMainRunner.run(RecordingCaptureReleaseTest.class, true);
+    }
+
     @Test
     @EnabledOnOs(value = OS.WINDOWS, disabledReason = "弹窗标题栏需要 Windows HWND")
     void popupTitleBarContract() throws Exception {

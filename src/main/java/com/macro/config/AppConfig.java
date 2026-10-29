@@ -1,6 +1,7 @@
 package com.macro.config;
 
 import com.macro.constant.ApplicationInfo;
+import com.macro.diagnostics.ErrorReporter;
 import lombok.Getter;
 
 import java.io.*;
@@ -65,7 +66,7 @@ public class AppConfig {
      * 获取程序所在目录。
      * jpackage 打包后使用 exe 所在目录；IDE 运行时使用项目工作目录。
      */
-    private File resolveApplicationDirectory() {
+    public static File resolveApplicationDirectory() {
         try {
             File location = new File(AppConfig.class.getProtectionDomain().getCodeSource().getLocation().toURI());
 
@@ -105,9 +106,11 @@ public class AppConfig {
         } catch (IllegalArgumentException e) {
             // Properties 的非法 Unicode 转义不能留下半份配置，也不能触发自动覆盖。
             System.err.println("配置文件格式错误，保留原文件并沿用当前配置或默认值：" + e.getMessage());
+            ErrorReporter.report("配置文件格式错误，保留原文件：" + configFile, e);
             return;
         } catch (IOException e) {
             System.err.println("读取配置文件失败：" + e.getMessage());
+            ErrorReporter.report("读取配置文件失败：" + configFile, e);
             return;
         }
         properties.putAll(loaded);
@@ -173,6 +176,7 @@ public class AppConfig {
     private void createDefaultDirectory(File directory) {
         if (!directory.exists() && !directory.mkdirs()) {
             System.err.println("创建默认保存目录失败：" + directory.getAbsolutePath());
+            ErrorReporter.report("创建默认保存目录失败：" + directory.getAbsolutePath(), null);
         }
     }
 
@@ -184,6 +188,7 @@ public class AppConfig {
 
         if (parent != null && !parent.exists() && !parent.mkdirs()) {
             System.err.println("创建配置目录失败：" + parent.getAbsolutePath());
+            ErrorReporter.report("创建配置目录失败：" + parent.getAbsolutePath(), null);
             return false;
         }
 
@@ -199,9 +204,11 @@ public class AppConfig {
             return true;
         } catch (AtomicMoveNotSupportedException e) {
             System.err.println("保存配置文件失败：文件系统不支持原子替换，未替换配置文件。" + e.getMessage());
+            ErrorReporter.report("保存配置文件失败，文件系统不支持原子替换：" + configFile, e);
             return false;
         } catch (IOException e) {
             System.err.println("保存配置文件失败：" + e.getMessage());
+            ErrorReporter.report("保存配置文件失败：" + configFile, e);
             return false;
         } finally {
             // 只清理本次成功创建且尚未移走的临时文件，不扫描或删除已有同名模式文件。
@@ -210,6 +217,7 @@ public class AppConfig {
                     Files.deleteIfExists(temporaryPath);
                 } catch (IOException e) {
                     System.err.println("清理配置临时文件失败：" + temporaryPath + "，" + e.getMessage());
+                    ErrorReporter.report("清理本次配置临时文件失败：" + temporaryPath, e);
                 }
             }
         }

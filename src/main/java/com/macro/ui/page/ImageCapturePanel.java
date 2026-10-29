@@ -9,6 +9,9 @@ import com.macro.constant.ApplicationInfo;
 import com.macro.storage.ImageCaptureStorage;
 import com.macro.ui.component.RoundedPanel;
 import com.macro.ui.dialog.AppMessageDialog;
+import com.macro.ui.dialog.OcrTextDialog;
+import com.macro.ui.dialog.CaptureWindowDialog;
+import com.macro.ui.capture.CaptureWindowService;
 import com.macro.ui.filedialog.FileDialogException;
 import com.macro.ui.filedialog.FileDialogOptions;
 import com.macro.ui.filedialog.FileDialogService;
@@ -60,7 +63,11 @@ public final class ImageCapturePanel extends JPanel {
     private final ImageCaptureStorage imageCaptureStorage;
     private final Runnable onBack;
     private final Runnable onOpenSettings;
-    private final Runnable onCaptureRequested;
+    private final java.util.function.Consumer<CaptureWindowService.Target> onCaptureRequested;
+    private CaptureWindowService.Target captureTarget;
+    private final JLabel captureTargetLabel = new JLabel("截图范围：鼠标所在屏幕");
+    private final JButton chooseWindowButton = new JButton("指定窗口");
+    private final JButton useScreenButton = new JButton("使用屏幕");
     private final ImagePreviewPanel previewPanel;
     private final JLabel fileNameValueLabel;
     private final JLabel imageSizeValueLabel;
@@ -69,6 +76,8 @@ public final class ImageCapturePanel extends JPanel {
     private final JButton clearButton;
     private final JButton saveButton;
     private final JButton saveAsButton;
+    private final JButton ocrButton;
+    private OcrTextDialog ocrDialog;
     private BufferedImage capturedImage;
     private String captureFileName;
     private File currentSaveFile;
@@ -83,6 +92,12 @@ public final class ImageCapturePanel extends JPanel {
             AppConfig appConfig,
             ImageCaptureStorage imageCaptureStorage
     ) {
+        this(onBack, onOpenSettings, target -> { if (onCaptureRequested != null) onCaptureRequested.run(); }, appConfig, imageCaptureStorage);
+    }
+
+    public ImageCapturePanel(Runnable onBack, Runnable onOpenSettings,
+            java.util.function.Consumer<CaptureWindowService.Target> onCaptureRequested,
+            AppConfig appConfig, ImageCaptureStorage imageCaptureStorage) {
         this.onBack = onBack;
         this.onOpenSettings = onOpenSettings;
         this.onCaptureRequested = onCaptureRequested;
@@ -96,6 +111,9 @@ public final class ImageCapturePanel extends JPanel {
         clearButton = createButton("清除", IconType.CLEAR, false);
         saveButton = createButton("保存", IconType.SAVE, false);
         saveAsButton = createButton("另存为", IconType.SAVE_AS, false);
+        ocrButton = new JButton("提取文字");
+        ocrButton.setFont(FONT_BOLD);
+        ComponentStyleUtil.styleSecondaryButton(ocrButton);
         initializeLayout();
         installImageImport();
         updateImageActions(false);
@@ -333,11 +351,39 @@ public final class ImageCapturePanel extends JPanel {
         JPanel bottom = new JPanel();
         bottom.setOpaque(false);
         bottom.setLayout(new BoxLayout(bottom, BoxLayout.Y_AXIS));
+        bottom.add(createCaptureScopePanel());
+        bottom.add(Box.createVerticalStrut(10));
         bottom.add(createInfoPanel());
         bottom.add(Box.createVerticalStrut(12));
         bottom.add(createButtonPanel());
         content.add(bottom, BorderLayout.SOUTH);
         return content;
+    }
+
+    private JPanel createCaptureScopePanel() {
+        JPanel scope = new JPanel(new BorderLayout(10, 0)); scope.setOpaque(false);
+        captureTargetLabel.setFont(FONT_NORMAL); captureTargetLabel.setForeground(theme.textSecondary());
+        scope.add(captureTargetLabel, BorderLayout.CENTER);
+        JPanel buttons = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0)); buttons.setOpaque(false);
+        for (JButton button : new JButton[]{chooseWindowButton, useScreenButton}) {
+            button.setFont(FONT_NORMAL); ComponentStyleUtil.styleSecondaryButton(button); buttons.add(button);
+        }
+        useScreenButton.setEnabled(false);
+        useScreenButton.addActionListener(event -> setCaptureTarget(null));
+        chooseWindowButton.addActionListener(event -> {
+            if (saving || importing) return;
+            CaptureWindowDialog dialog = new CaptureWindowDialog(SwingUtilities.getWindowAncestor(this));
+            dialog.setVisible(true); dialog.getSelection().ifPresent(this::setCaptureTarget);
+        });
+        chooseWindowButton.setToolTipText("独立选择截图窗口，不改变录制或播放目标；跨屏时取可见面积最大的屏幕部分");
+        scope.add(buttons, BorderLayout.EAST); return scope;
+    }
+
+    private void setCaptureTarget(CaptureWindowService.Target target) {
+        captureTarget = target;
+        captureTargetLabel.setText(target == null ? "截图范围：鼠标所在屏幕" : "截图窗口：" + target.title());
+        captureTargetLabel.setToolTipText(target == null ? null : target.toString());
+        useScreenButton.setEnabled(target != null && !saving && !importing);
     }
 
     /** 创建图像预览卡片。 */
@@ -382,18 +428,27 @@ public final class ImageCapturePanel extends JPanel {
 
     /** 创建等宽的底部操作按钮。 */
     private JPanel createButtonPanel() {
-        JPanel panel = new JPanel(new GridLayout(1, 4, 10, 0));
+        JPanel panel = new JPanel(new GridLayout(1, 5, 10, 0));
         panel.setOpaque(false);
 
-        captureButton.addActionListener(event -> runCallback(onCaptureRequested));
+        captureButton.addActionListener(event -> { if (onCaptureRequested != null) onCaptureRequested.accept(captureTarget); });
         clearButton.addActionListener(event -> clearCapturedImage());
         saveButton.addActionListener(event -> saveCapturedImage());
         saveAsButton.addActionListener(event -> saveCapturedImageAs());
+        ocrButton.addActionListener(event -> {
+            if (capturedImage == null || saving || importing) return;
+            if (ocrDialog == null || !ocrDialog.isDisplayable()) {
+                ocrDialog = new OcrTextDialog(SwingUtilities.getWindowAncestor(this), capturedImage,
+                        () -> appConfig.getDefaultScreenCaptureDirectory());
+            }
+            ocrDialog.setVisible(true); ocrDialog.toFront();
+        });
 
         panel.add(captureButton);
         panel.add(clearButton);
         panel.add(saveButton);
         panel.add(saveAsButton);
+        panel.add(ocrButton);
         return panel;
     }
 
@@ -409,6 +464,7 @@ public final class ImageCapturePanel extends JPanel {
         }
 
         capturedImage = image;
+        closeOcrDialog();
         currentSaveFile = null;
         previewPanel.setImage(image);
         captureFileName = "capture_"
@@ -430,6 +486,7 @@ public final class ImageCapturePanel extends JPanel {
         }
 
         capturedImage = null;
+        closeOcrDialog();
         captureFileName = null;
         currentSaveFile = null;
         previewPanel.setImage(null);
@@ -565,9 +622,16 @@ public final class ImageCapturePanel extends JPanel {
     /** 根据是否存在截图更新后续操作状态。 */
     private void updateImageActions(boolean hasImage) {
         captureButton.setEnabled(!saving && !importing);
+        chooseWindowButton.setEnabled(!saving && !importing);
+        useScreenButton.setEnabled(captureTarget != null && !saving && !importing);
         clearButton.setEnabled(hasImage && !saving && !importing);
         saveButton.setEnabled(hasImage && !saving && !importing);
         saveAsButton.setEnabled(hasImage && !saving && !importing);
+        ocrButton.setEnabled(hasImage && !saving && !importing);
+    }
+
+    private void closeOcrDialog() {
+        if (ocrDialog != null) { ocrDialog.dispose(); ocrDialog = null; }
     }
 
     /** 创建主题按钮。 */

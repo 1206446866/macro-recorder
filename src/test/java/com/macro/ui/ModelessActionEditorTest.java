@@ -102,6 +102,7 @@ public final class ModelessActionEditorTest {
                 editor.dispose();
                 check(!preview.isDisplayable(), "关闭编辑器后识别窗口仍残留");
             } finally { editor.dispose(); }
+            verifyUndoIntegration(frame, timeline);
             ActionEditorDialog locked = ActionEditorDialog.edit(frame, image, ignored -> writes.incrementAndGet(), null);
             frame.replaceTimelineEditor(locked);
             invoke(frame, "lockTimelineEditing");
@@ -109,6 +110,49 @@ public final class ModelessActionEditorTest {
             invoke(locked, "saveAction");
             check(writes.get() == 0, "锁定后旧保存仍生效");
         } finally { frame.dispose(); }
+    }
+
+    /** 实际主窗口同步、旧编辑器关闭、保存及加载边界；文件只写在隔离目录。 */
+    private static void verifyUndoIntegration(MacroFrame frame, ActionTimelinePanel timeline) throws Exception {
+        Path base = Files.createTempDirectory(Path.of("target"), "undo-integration-").toAbsolutePath();
+        Path firstDirectory = Files.createDirectories(base.resolve("first"));
+        Path secondDirectory = Files.createDirectories(base.resolve("second"));
+        MacroNode first = action("undo-first"), second = action("undo-second");
+        timeline.setFlow(MacroFlowFactory.rebuildLinear(List.of(first, second), "undo-end"));
+        Field fileField = MacroFrame.class.getDeclaredField("currentFile"); fileField.setAccessible(true);
+        java.io.File firstFile = firstDirectory.resolve("saved.mr").toFile(); fileField.set(frame, firstFile);
+        invoke(frame, "syncActionsFromTimeline");
+        MacroNode edited = action("unused"); edited.getAction().setDelay(9);
+        check(timeline.replaceAction(first, edited), "替换操作失败");
+        invoke(frame, "syncActionsFromTimeline");
+        Method save = MacroFrame.class.getDeclaredMethod("saveMacroToFile", java.io.File.class); save.setAccessible(true);
+        save.invoke(frame, firstFile);
+        byte[] savedBytes = Files.readAllBytes(firstFile.toPath());
+        check(timeline.canUndo(), "同目录保存不应清空撤销");
+        AtomicInteger staleWrites = new AtomicInteger();
+        ActionEditorDialog editor = ActionEditorDialog.edit(frame, edited,
+                timeline.guardEditCallback(ignored -> staleWrites.incrementAndGet()), null);
+        frame.replaceTimelineEditor(editor);
+        check(timeline.undo(), "主窗口撤销失败");
+        check(get(frame, "macroFlow") == timeline.getFlow()
+                && ((List<?>) get(frame, "actions")).equals(timeline.getActions()), "撤销未同步主窗口播放/保存数据");
+        check(get(frame, "timelineEditorDialog") == null, "撤销后旧对象的编辑窗口未关闭");
+        invoke(editor, "saveAction"); check(staleWrites.get() == 0, "旧编辑器仍能写回");
+        check(java.util.Arrays.equals(savedBytes, Files.readAllBytes(firstFile.toPath())), "撤销自动改写了磁盘 MR");
+        check(timeline.deleteAction(0, false), "删除操作失败"); invoke(frame, "syncActionsFromTimeline");
+        check(timeline.canUndo(), "删除未建立历史");
+        ActionEditorDialog creator = ActionEditorDialog.create(frame,
+                timeline.guardEditCallback(ignored -> staleWrites.incrementAndGet()));
+        frame.replaceTimelineEditor(creator);
+        save.invoke(frame, secondDirectory.resolve("saved.mr").toFile());
+        check(!timeline.canUndo(), "无图片的跨目录另存为也必须清空旧路径基准的撤销");
+        check(get(frame, "timelineEditorDialog") == null, "改变图片路径基准后旧创建窗口未关闭");
+        invoke(creator, "saveAction"); check(staleWrites.get() == 0, "旧路径基准下的创建窗口仍能写回");
+        check(timeline.insertAction(null, action("fresh"), null), "插入失败"); invoke(frame, "syncActionsFromTimeline");
+        check(timeline.canUndo(), "插入未建立历史");
+        Method load = MacroFrame.class.getDeclaredMethod("loadMacroFile", java.io.File.class); load.setAccessible(true);
+        load.invoke(frame, firstFile); check(!timeline.canUndo(), "加载成功后旧宏撤销未清空");
+        check(timeline.getActions().get(0).getDelay() == 9, "加载没有使用实际磁盘内容");
     }
 
     private static MacroNode action(String id) {

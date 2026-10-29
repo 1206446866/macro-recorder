@@ -2,6 +2,13 @@ package com.macro.ui.dialog;
 
 import com.macro.constant.UiConstants;
 import com.macro.recognition.ScreenRecognitionService;
+import com.macro.recognition.TemplateScaleRange;
+import com.macro.ocr.OcrEngine;
+import com.macro.ocr.OcrLanguage;
+import com.macro.ocr.OcrService;
+import com.macro.flow.ImageCheckConfig;
+import com.macro.flow.ImageSearchScope;
+import com.macro.model.TargetWindow;
 import com.macro.recognition.ImageRecognitionDiagnostics;
 import com.macro.ui.component.RoundedPanel;
 import com.macro.ui.capture.WindowsCaptureSupport;
@@ -22,6 +29,8 @@ import java.awt.*;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.awt.event.ComponentAdapter;
+import java.awt.event.ComponentEvent;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
@@ -29,6 +38,8 @@ import java.util.List;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.Locale;
+import java.util.EnumSet;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
 import java.util.function.Supplier;
@@ -49,8 +60,8 @@ public final class ImageRecognitionFrame extends JFrame {
         finally { super.removeNotify(); }
     }
 
-    private static final Dimension DEFAULT_SIZE = new Dimension(860, 600);
-    private static final Dimension MINIMUM_SIZE = new Dimension(760, 540);
+    private static final Dimension DEFAULT_SIZE = new Dimension(1080, 640);
+    private static final Dimension MINIMUM_SIZE = new Dimension(1080, 640);
     private static final Dimension PREVIEW_SIZE = new Dimension(330, 210);
     private static final int CAPTURE_SETTLE_DELAY_MILLIS = 180;
 
@@ -62,12 +73,11 @@ public final class ImageRecognitionFrame extends JFrame {
             new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 13);
     private static final Font FONT_SECTION =
             new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 16);
-    private static final Font FONT_TITLE =
-            new Font(UiConstants.DEFAULT_FONT_FAMILY, Font.BOLD, 22);
 
     private final ThemePalette theme = ThemeManager.getPalette();
     private final FileDialogService fileDialogs = FileDialogServiceFactory.create();
     private final Supplier<File> defaultDirectorySupplier;
+    private final OcrEngine ocrEngine;
     private final ScreenRecognitionService recognitionService =
             new ScreenRecognitionService();
 
@@ -99,8 +109,27 @@ public final class ImageRecognitionFrame extends JFrame {
     private final JSpinner thresholdSpinner = new JSpinner(
             new SpinnerNumberModel(90, 1, 100, 1)
     );
+    private final JCheckBox scaleMatchingCheckBox = new JCheckBox("缩放匹配");
+    private final JSpinner minimumScaleSpinner = new JSpinner(new SpinnerNumberModel(
+            TemplateScaleRange.DEFAULT.minimum() * 100, 1.0, 100.0, 1.0));
+    private final JSpinner maximumScaleSpinner = new JSpinner(new SpinnerNumberModel(
+            TemplateScaleRange.DEFAULT.maximum() * 100, 100.0, 400.0, 1.0));
+    private final JTextArea templateTextArea = new JTextArea();
+    private final JPanel templateTextContent = new JPanel(new CardLayout());
+    private final JLabel templateTextEmpty = createLabel("无信息", FONT_NORMAL, theme.textMuted());
+    private final JLabel templateTextStatus = createValueLabel();
+    private final JButton copyTextButton = new JButton("复制文字");
+    private final JButton retryTextButton = new JButton("重新提取");
+    private SwingWorker<String, Void> templateTextWorker;
+    private AtomicBoolean templateTextCancelled;
+    private boolean templateTextPending;
+    private String extractedTemplateText = "";
 
     private BufferedImage templateImage;
+    /** 从动作编辑器传入，仅影响测试，不修改尚未保存的动作。 */
+    private boolean scaleMatchingEnabled;
+    private final ImageCheckConfig scopeConfig = new ImageCheckConfig();
+    private final JLabel scopeLabel = new JLabel("识别范围：桌面");
     private File lastDirectory;
     private List<ScreenRecognitionService.RecognitionResult> displayedResults =
             List.of();
@@ -120,8 +149,15 @@ public final class ImageRecognitionFrame extends JFrame {
             Window applicationWindow,
             Supplier<File> defaultDirectorySupplier
     ) {
+        this(applicationWindow, defaultDirectorySupplier, new OcrService());
+    }
+
+    /** 注入文字引擎供隔离测试使用；构造及隐藏预览不启动提取。 */
+    ImageRecognitionFrame(Window applicationWindow, Supplier<File> defaultDirectorySupplier,
+                          OcrEngine ocrEngine) {
         super("图像识别测试");
         this.defaultDirectorySupplier = defaultDirectorySupplier;
+        this.ocrEngine = java.util.Objects.requireNonNull(ocrEngine);
 
         initializeWindow(applicationWindow);
         titleBarSupport = new WindowTitleBarSupport(this);
@@ -153,27 +189,76 @@ public final class ImageRecognitionFrame extends JFrame {
         cards.setOpaque(false);
         cards.add(createTemplateCard());
         cards.add(createResultCard());
-        root.add(cards, BorderLayout.CENTER);
+        JPanel content = new JPanel(new BorderLayout(14, 0));
+        content.setOpaque(false);
+        content.add(cards, BorderLayout.CENTER);
+        content.add(createTemplateTextCard(), BorderLayout.EAST);
+        root.add(content, BorderLayout.CENTER);
         root.add(createControlBar(), BorderLayout.SOUTH);
         setContentPane(root);
     }
 
-    /** 创建标题和用途说明。 */
+    /** 保留识别范围，移除重复标题与用途说明。 */
     private JPanel createHeader() {
         JPanel panel = new JPanel();
         panel.setOpaque(false);
         panel.setLayout(new BoxLayout(panel, BoxLayout.Y_AXIS));
 
-        JLabel title = createLabel("图像识别测试", FONT_TITLE, theme.textPrimary());
-        JLabel subtitle = createLabel(
-                "加载模板图像，按原始尺寸在所有显示器中查找并返回最佳位置",
-                FONT_SMALL,
-                theme.textSecondary()
-        );
-        panel.add(title);
-        panel.add(Box.createVerticalStrut(4));
-        panel.add(subtitle);
+        scopeLabel.setFont(FONT_SMALL); scopeLabel.setForeground(theme.textSecondary());
+        panel.add(scopeLabel);
         return panel;
+    }
+
+    /** 文字仅来自当前模板，后台提取与屏幕匹配互不等待。 */
+    private JPanel createTemplateTextCard() {
+        RoundedPanel card = createCard();
+        card.setLayout(new BorderLayout(0, 10));
+        card.setPreferredSize(new Dimension(230, 0));
+        card.add(createLabel("识别文字", FONT_SECTION, theme.textPrimary()), BorderLayout.NORTH);
+        templateTextArea.setEditable(false);
+        templateTextArea.setLineWrap(true);
+        templateTextArea.setWrapStyleWord(true);
+        templateTextArea.setFont(FONT_NORMAL);
+        templateTextArea.setBackground(theme.targetCard());
+        templateTextArea.setForeground(theme.textPrimary());
+        templateTextArea.setCaretColor(theme.textPrimary());
+        templateTextArea.setSelectionColor(theme.accent());
+        templateTextArea.setSelectedTextColor(theme.textOnAccent());
+        templateTextArea.setMargin(new Insets(4, 4, 4, 4));
+        JScrollPane scroll = new JScrollPane(templateTextArea);
+        ComponentStyleUtil.styleScrollPane(scroll);
+        scroll.setBorder(BorderFactory.createEmptyBorder());
+        scroll.setOpaque(false);
+        scroll.getViewport().setBackground(theme.targetCard());
+        scroll.setHorizontalScrollBarPolicy(ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER);
+        templateTextContent.setOpaque(false);
+        templateTextEmpty.setHorizontalAlignment(SwingConstants.CENTER);
+        templateTextEmpty.setVerticalAlignment(SwingConstants.CENTER);
+        templateTextContent.add(templateTextEmpty, "empty");
+        templateTextContent.add(scroll, "text");
+        RoundedPanel textBox = new RoundedPanel(theme.targetCard(), theme.border(), 12);
+        textBox.setLayout(new BorderLayout());
+        textBox.setBorder(new EmptyBorder(10, 10, 10, 10));
+        textBox.add(templateTextContent, BorderLayout.CENTER);
+        card.add(textBox, BorderLayout.CENTER);
+        showTemplateText();
+        JPanel footer = new JPanel(new BorderLayout(0, 8));
+        footer.setOpaque(false);
+        templateTextStatus.setText("当前模板图片");
+        footer.add(templateTextStatus, BorderLayout.NORTH);
+        JPanel buttons = new JPanel(new GridLayout(1, 2, 6, 0));
+        buttons.setOpaque(false);
+        for (JButton button : new JButton[]{retryTextButton, copyTextButton}) {
+            button.setFont(FONT_SMALL);
+            ComponentStyleUtil.styleSecondaryButton(button);
+            button.setBorder(new EmptyBorder(7, 6, 7, 6));
+            buttons.add(button);
+        }
+        copyTextButton.setEnabled(false);
+        retryTextButton.setEnabled(false);
+        footer.add(buttons, BorderLayout.SOUTH);
+        card.add(footer, BorderLayout.SOUTH);
+        return card;
     }
 
     /** 创建模板图像区域。 */
@@ -298,7 +383,19 @@ public final class ImageRecognitionFrame extends JFrame {
         constraints.gridx = 3;
         constraints.weightx = 1.0;
         constraints.insets = new Insets(0, 0, 0, 12);
-        panel.add(createLabel("采集时自动隐藏本程序窗口", FONT_SMALL, theme.textSecondary()), constraints);
+        JPanel scaleControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        scaleControls.setOpaque(false);
+        scaleMatchingCheckBox.setFont(FONT_NORMAL);
+        ComponentStyleUtil.styleCheckBox(scaleMatchingCheckBox);
+        scaleMatchingCheckBox.setToolTipText("仅调整本测试窗口；先按原尺寸匹配，未命中再尝试范围内有限比例");
+        scaleControls.add(scaleMatchingCheckBox);
+        configureScaleSpinner(minimumScaleSpinner, "缩放下限：1%～100%");
+        configureScaleSpinner(maximumScaleSpinner, "缩放上限：100%～400%");
+        scaleControls.add(minimumScaleSpinner);
+        scaleControls.add(createLabel("% ～", FONT_NORMAL, theme.textSecondary()));
+        scaleControls.add(maximumScaleSpinner);
+        scaleControls.add(createLabel("%", FONT_NORMAL, theme.textSecondary()));
+        panel.add(scaleControls, constraints);
 
         JPanel recognitionButtons = new JPanel(new GridLayout(1, 1));
         recognitionButtons.setOpaque(false);
@@ -312,6 +409,52 @@ public final class ImageRecognitionFrame extends JFrame {
         return panel;
     }
 
+    private void configureScaleSpinner(JSpinner spinner, String tooltip) {
+        spinner.setEditor(new JSpinner.NumberEditor(spinner, "0.###"));
+        JSpinner.NumberEditor editor = (JSpinner.NumberEditor) spinner.getEditor();
+        javax.swing.text.NumberFormatter formatter = new javax.swing.text.NumberFormatter(editor.getFormat()) {
+            @Override public Object stringToValue(String text) throws java.text.ParseException {
+                // Enter 和箭头触发的提交也执行完整校验，不能把 10x 截成 10。
+                if (text.equals(valueToString(spinner.getValue()))) return spinner.getValue();
+                SpinnerNumberModel model = (SpinnerNumberModel) spinner.getModel();
+                if (!text.matches("[0-9]+(?:\\.[0-9]{1,3})?"))
+                    throw new java.text.ParseException("请输入最多三位小数的百分比", 0);
+                double value = Double.parseDouble(text);
+                if (!Double.isFinite(value) || value < ((Number) model.getMinimum()).doubleValue()
+                        || value > ((Number) model.getMaximum()).doubleValue())
+                    throw new java.text.ParseException("百分比超出范围", 0);
+                return value;
+            }
+        };
+        formatter.setValueClass(Double.class);
+        editor.getTextField().setFormatterFactory(new javax.swing.text.DefaultFormatterFactory(formatter));
+        // 保留未改动的精确默认 2/3；离开输入框时统一由识别按钮校验。
+        ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField()
+                .setFocusLostBehavior(JFormattedTextField.PERSIST);
+        spinner.setPreferredSize(new Dimension(112, 34));
+        spinner.setFont(FONT_NORMAL);
+        spinner.setToolTipText(tooltip);
+        ComponentStyleUtil.styleSpinner(spinner);
+    }
+
+    private static double commitScalePercent(JSpinner spinner, String name) {
+        JFormattedTextField field = ((JSpinner.DefaultEditor) spinner.getEditor()).getTextField();
+        try {
+            field.commitEdit();
+            return ((Number) spinner.getValue()).doubleValue() / 100;
+        } catch (java.text.ParseException | IllegalArgumentException exception) {
+            throw new IllegalArgumentException(name + "请输入范围内的百分比，最多三位小数。", exception);
+        }
+    }
+
+    private TemplateScaleRange readScaleRange() {
+        double minimum = commitScalePercent(minimumScaleSpinner, "缩放下限");
+        double maximum = commitScalePercent(maximumScaleSpinner, "缩放上限");
+        if (Math.abs(minimum - TemplateScaleRange.DEFAULT.minimum()) < 1e-12)
+            minimum = TemplateScaleRange.DEFAULT.minimum();
+        return new TemplateScaleRange(minimum, maximum);
+    }
+
     /** 注册按钮、快捷键和窗口关闭处理。 */
     private void initializeEvents() {
         loadButton.addActionListener(event -> loadTemplateImage());
@@ -321,6 +464,18 @@ public final class ImageRecognitionFrame extends JFrame {
         previousResultButton.addActionListener(event -> selectAdjacentResult(-1));
         nextResultButton.addActionListener(event -> selectAdjacentResult(1));
         showAllResultsCheckBox.addActionListener(event -> refreshResultPreview());
+        scaleMatchingCheckBox.addActionListener(event -> {
+            scaleMatchingEnabled = scaleMatchingCheckBox.isSelected();
+            updateActionState();
+        });
+        copyTextButton.addActionListener(event -> copyTemplateText());
+        retryTextButton.addActionListener(event -> {
+            templateTextPending = templateImage != null;
+            startPendingTemplateText();
+        });
+        addComponentListener(new ComponentAdapter() {
+            @Override public void componentShown(ComponentEvent event) { startPendingTemplateText(); }
+        });
 
         getRootPane().registerKeyboardAction(
                 event -> dispose(),
@@ -355,6 +510,25 @@ public final class ImageRecognitionFrame extends JFrame {
 
     /** 载入动作编辑器当前的模板；只准备预览，不自动识别或修改宏。 */
     public void setTemplate(File file, double threshold) throws IOException {
+        setTemplate(file, threshold, scaleMatchingEnabled);
+    }
+
+    /** 仅传递未保存的范围配置，不定位窗口、不截图。 */
+    public void setSearchScope(ImageSearchScope scope, TargetWindow window) {
+        if (recognizing || closing) throw new IllegalArgumentException("识别窗口当前不可更换范围");
+        ImageCheckConfig selection = new ImageCheckConfig();
+        selection.setSearchScope(scope); selection.setSearchWindow(window); selection.validateSearchScope();
+        scopeConfig.setSearchScope(selection.getSearchScope()); scopeConfig.setSearchWindow(selection.getSearchWindow());
+        recognitionService.clearWindowBindings();
+        boolean restricted = scopeConfig.getSearchScope() == ImageSearchScope.WINDOW;
+        scopeLabel.setText(restricted ? "识别范围：指定窗口 · " + window.getWindowTitle() : "识别范围：桌面");
+        scopeLabel.setToolTipText(restricted ? window.getProcessName() + " · 需保持窗口在前台，不会自动激活" : null);
+        recognizeButton.setText(restricted ? "识别指定窗口" : "识别当前屏幕");
+        clearResult();
+    }
+
+    /** 载入动作编辑器的模板、阈值及缩放开关，保持测试与播放的识别参数一致。 */
+    public void setTemplate(File file, double threshold, boolean scaleMatchingEnabled) throws IOException {
         if (recognizing || closing) throw new IllegalArgumentException("识别窗口当前不可更换模板");
         if (file == null || !Double.isFinite(threshold) || threshold < .01 || threshold > 1.0) {
             throw new IllegalArgumentException("请选择有效模板和匹配阈值");
@@ -362,6 +536,8 @@ public final class ImageRecognitionFrame extends JFrame {
         BufferedImage image = ImageIO.read(file);
         if (image == null) throw new IOException("无法读取模板图片：" + file.getName());
         templateImage = image;
+        this.scaleMatchingEnabled = scaleMatchingEnabled;
+        scaleMatchingCheckBox.setSelected(scaleMatchingEnabled);
         lastDirectory = file.getAbsoluteFile().getParentFile();
         templatePreview.setImage(image, null, theme.accent());
         templateNameValue.setText(file.getName());
@@ -370,6 +546,86 @@ public final class ImageRecognitionFrame extends JFrame {
         thresholdSpinner.setValue((int) Math.round(threshold * 100.0));
         clearResult();
         updateActionState();
+        resetTemplateText();
+        if (isShowing()) startPendingTemplateText();
+    }
+
+    private void resetTemplateText() {
+        if (templateTextCancelled != null) templateTextCancelled.set(true);
+        templateTextPending = templateImage != null;
+        extractedTemplateText = "";
+        showTemplateText();
+        templateTextStatus.setText("当前模板图片");
+        templateTextStatus.setToolTipText(null);
+        copyTextButton.setEnabled(false);
+        retryTextButton.setEnabled(templateImage != null && templateTextWorker == null);
+    }
+
+    /** 在旧原生调用实际结束后才启动最新模板，避免快速换图产生并行积压。 */
+    private void startPendingTemplateText() {
+        if (closing || templateImage == null || !templateTextPending || templateTextWorker != null) return;
+        templateTextPending = false;
+        BufferedImage image = templateImage;
+        AtomicBoolean cancelled = new AtomicBoolean();
+        templateTextCancelled = cancelled;
+        extractedTemplateText = "";
+        showTemplateText();
+        templateTextStatus.setText("正在提取…");
+        templateTextStatus.setToolTipText(null);
+        retryTextButton.setEnabled(false);
+        copyTextButton.setEnabled(false);
+        templateTextWorker = new SwingWorker<>() {
+            @Override protected String doInBackground() throws Exception {
+                return ocrEngine.extract(image, EnumSet.allOf(OcrLanguage.class), false, cancelled::get);
+            }
+
+            @Override protected void done() {
+                if (templateTextWorker != this) return;
+                templateTextWorker = null;
+                if (closing) return;
+                if (!cancelled.get() && templateImage == image) {
+                    try {
+                        String text = get();
+                        extractedTemplateText = text == null ? "" : text.strip();
+                        showTemplateText();
+                        templateTextStatus.setText("当前模板图片");
+                        templateTextStatus.setToolTipText(null);
+                        copyTextButton.setEnabled(!extractedTemplateText.isEmpty());
+                    } catch (CancellationException exception) {
+                        templateTextStatus.setText("提取已取消");
+                    } catch (InterruptedException exception) {
+                        Thread.currentThread().interrupt();
+                        templateTextStatus.setText("提取已中断");
+                    } catch (ExecutionException exception) {
+                        templateTextStatus.setText("提取失败，可重新提取");
+                        Throwable cause = exception.getCause() == null ? exception : exception.getCause();
+                        templateTextStatus.setToolTipText(cause.getMessage());
+                        if (!(cause instanceof CancellationException))
+                            com.macro.diagnostics.ErrorReporter.report("提取模板文字失败", cause);
+                    }
+                }
+                retryTextButton.setEnabled(templateImage != null);
+                startPendingTemplateText();
+            }
+        };
+        templateTextWorker.execute();
+    }
+
+    /** 空状态单独居中展示；有文字时保留左上对齐、选择及滚动。 */
+    private void showTemplateText() {
+        templateTextArea.setText(extractedTemplateText);
+        templateTextArea.setCaretPosition(0);
+        ((CardLayout) templateTextContent.getLayout()).show(templateTextContent,
+                extractedTemplateText.isEmpty() ? "empty" : "text");
+    }
+
+    private void copyTemplateText() {
+        if (extractedTemplateText.isEmpty()) return;
+        try {
+            Toolkit.getDefaultToolkit().getSystemClipboard().setContents(new StringSelection(extractedTemplateText), null);
+        } catch (IllegalStateException exception) {
+            AppMessageDialog.showWarning(this, "剪贴板暂时不可用，请稍后重试。", exception);
+        }
     }
 
     /** 保留最近目录以及测试窗口支持的全部图片格式。 */
@@ -390,6 +646,7 @@ public final class ImageRecognitionFrame extends JFrame {
             return;
         }
         templateImage = null;
+        resetTemplateText();
         templatePreview.setImage(null, null, theme.accent());
         templateNameValue.setText("—");
         templateNameValue.setToolTipText(null);
@@ -409,6 +666,7 @@ public final class ImageRecognitionFrame extends JFrame {
 
         try {
             NumericInputUtil.commitSpinnerInt(thresholdSpinner);
+            if (scaleMatchingEnabled) readScaleRange();
         } catch (IllegalArgumentException exception) {
             AppMessageDialog.showWarning(this, exception.getMessage());
             return;
@@ -452,10 +710,19 @@ public final class ImageRecognitionFrame extends JFrame {
         if (closing || !recognizing) return;
         BufferedImage template = templateImage;
         double threshold = ((Number) thresholdSpinner.getValue()).doubleValue() / 100.0;
+        boolean useScaleMatching = scaleMatchingEnabled;
+        TemplateScaleRange scaleRange = useScaleMatching ? readScaleRange() : TemplateScaleRange.DEFAULT;
+        ImageCheckConfig searchConfig = new ImageCheckConfig();
+        searchConfig.setSearchScope(scopeConfig.getSearchScope()); searchConfig.setSearchWindow(scopeConfig.getSearchWindow());
+        boolean restricted = searchConfig.getSearchScope() == ImageSearchScope.WINDOW;
+        recognitionService.clearWindowBindings();
         String requestId = ImageRecognitionDiagnostics.nextRequestId("TEST");
         String input = "Request: " + requestId
                 + "\nTemplatePath: " + templateNameValue.getToolTipText()
                 + "\nThreshold: " + ImageRecognitionDiagnostics.similarity(threshold)
+                + "\nScaleMatchingEnabled: " + useScaleMatching
+                + "\nScaleRange: " + scaleRange
+                + "\nSearchScope: " + searchConfig.getSearchScope().name()
                 + "\nTemplatePixels: " + template.getWidth() + "x" + template.getHeight()
                 + "\nApplicationWindowsHidden: " + applicationWindowsHidden;
 
@@ -468,8 +735,9 @@ public final class ImageRecognitionFrame extends JFrame {
                 Toolkit.getDefaultToolkit().sync();
                 WindowsCaptureSupport.flush();
                 String foreground = ImageRecognitionDiagnostics.foregroundWindow();
+                var scope = recognitionService.captureScope(searchConfig, this::isCancelled);
                 List<ScreenRecognitionService.ScreenSnapshot> snapshots =
-                        recognitionService.captureScreens();
+                        scope.captureScreens(null, this::isCancelled);
                 String capture = "Request: " + requestId
                         + "\nCapturedAt: " + java.time.Instant.now()
                         + "\nForegroundBeforeCapture: " + foreground
@@ -477,7 +745,7 @@ public final class ImageRecognitionFrame extends JFrame {
                 ImageRecognitionDiagnostics.log("TEST", "CAPTURE", capture);
                 SwingUtilities.invokeLater(() -> {
                     if (recognitionWorker != this || closing) return;
-                    restoreApplicationWindows();
+                    if (!restricted) restoreApplicationWindows();
                     if (isDisplayable()) {
                         setResultStatus("正在匹配…", theme.accent());
                     }
@@ -485,8 +753,12 @@ public final class ImageRecognitionFrame extends JFrame {
                 ScreenRecognitionService.RecognitionReport report = recognitionService.recognize(
                         snapshots,
                         template,
-                        threshold
+                        threshold,
+                        useScaleMatching,
+                        this::isCancelled,
+                        scaleRange
                 );
+                scope.verify(this::isCancelled);
                 String outcome = "Request: " + requestId
                         + "\nFound: " + !report.matches().isEmpty()
                         + "\nBestCandidateSimilarity: " + (report.bestCandidate() == null
@@ -775,7 +1047,7 @@ public final class ImageRecognitionFrame extends JFrame {
                 window.setVisible(true);
                 restoreRecognition |= window == this;
             } catch (RuntimeException failure) {
-                System.err.println("恢复识别前窗口状态失败：" + failure.getMessage());
+                com.macro.diagnostics.ErrorReporter.report("恢复识别前窗口状态失败", failure);
             } finally {
                 saved.cloak().close();
             }
@@ -799,6 +1071,8 @@ public final class ImageRecognitionFrame extends JFrame {
     @Override
     public void dispose() {
         closing = true;
+        templateTextPending = false;
+        if (templateTextCancelled != null) templateTextCancelled.set(true);
         cancelPendingRecognition();
         super.dispose();
     }
@@ -869,6 +1143,9 @@ public final class ImageRecognitionFrame extends JFrame {
         clearButton.setEnabled(hasTemplate && !recognizing);
         recognizeButton.setEnabled(hasTemplate && !recognizing);
         thresholdSpinner.setEnabled(!recognizing);
+        scaleMatchingCheckBox.setEnabled(!recognizing);
+        minimumScaleSpinner.setEnabled(!recognizing && scaleMatchingEnabled);
+        maximumScaleSpinner.setEnabled(!recognizing && scaleMatchingEnabled);
         boolean hasResult = getSelectedResult() != null;
         copyPositionButton.setEnabled(!recognizing && hasResult);
         previousResultButton.setEnabled(

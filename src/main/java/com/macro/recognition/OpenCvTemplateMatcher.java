@@ -10,8 +10,11 @@ import java.awt.image.BufferedImage;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.HashSet;
+import java.util.Set;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 /** 使用 OpenCV 原生模板匹配实现多位置识别。 */
 public final class OpenCvTemplateMatcher {
@@ -20,9 +23,12 @@ public final class OpenCvTemplateMatcher {
     private static final double OVERLAP_MERGE_RATIO = 0.40;
     /** 仅限定 100% 阈值下原像素复核的候选范围，不作为接受匹配的容差。 */
     private static final double PERFECT_MATCH_RECHECK_ERROR_RATIO = 1e-6;
+    /** 小图保持串行，避免线程启动成本；大图最多同时执行两次原生匹配。 */
+    private static final long PARALLEL_SCALE_MIN_PIXELS = 256L * 256;
     private static final Object LOAD_LOCK = new Object();
     private static final AtomicBoolean PRELOAD_STARTED = new AtomicBoolean();
     private static volatile boolean loaded;
+    private final TemplateScaleVariants scaleVariants = new TemplateScaleVariants();
 
     /** 在后台提前加载并预热 OpenCV，避免阻塞应用启动界面。 */
     public static void preloadInBackground() {
@@ -96,9 +102,17 @@ public final class OpenCvTemplateMatcher {
             double threshold,
             int maxResults
     ) {
+        return findAll(source, template, threshold, maxResults, () -> false);
+    }
+
+    /** 原尺寸匹配的可取消入口，保持已有评分和候选合并规则。 */
+    SearchResult findAll(BufferedImage source, BufferedImage template, double threshold,
+                         int maxResults, BooleanSupplier stopRequested) {
         validateArguments(source, template, threshold, maxResults);
+        checkCancelled(stopRequested);
         ensureLoaded();
 
+        scaleVariants.prepare(template);
         int sourceWidth = source.getWidth();
         int sourceHeight = source.getHeight();
         int templateWidth = template.getWidth();
@@ -109,20 +123,176 @@ public final class OpenCvTemplateMatcher {
             return SearchResult.empty();
         }
 
+        Mat sourceMat = toBgrMat(source);
+        try {
+            return matchInSource(sourceMat, source, template, threshold, maxResults, stopRequested);
+        } finally {
+            release(sourceMat);
+        }
+    }
+
+    /** 用同一份屏幕 Mat 搜索最多十个粗查、四个细查比例，原尺寸由上层先行完成。 */
+    SearchResult findAllScaled(BufferedImage source, BufferedImage template, double threshold,
+                               int maxResults, MatchResult originalBest, BooleanSupplier stopRequested) {
+        return findAllScaled(source, template, threshold, maxResults, originalBest, stopRequested, true);
+    }
+
+    /** 扩大范围竞速任务保持比例串行；全局任务保留原有最多双比例并行。 */
+    SearchResult findAllScaled(BufferedImage source, BufferedImage template, double threshold,
+                               int maxResults, MatchResult originalBest, BooleanSupplier stopRequested,
+                               boolean allowParallelScales) {
+        return findAllScaled(source, template, threshold, maxResults, originalBest, stopRequested,
+                allowParallelScales, TemplateScaleRange.DEFAULT);
+    }
+
+    SearchResult findAllScaled(BufferedImage source, BufferedImage template, double threshold,
+                               int maxResults, MatchResult originalBest, BooleanSupplier stopRequested,
+                               boolean allowParallelScales, TemplateScaleRange range) {
+        validateArguments(source, template, threshold, maxResults);
+        checkCancelled(stopRequested);
+        ensureLoaded();
+        Set<Long> visited = new HashSet<>();
+        visited.add(TemplateScaleVariants.sizeKey(template.getWidth(), template.getHeight()));
+        List<MatchResult> matches = new ArrayList<>();
+        MatchResult best = originalBest;
+        double bestScale = 1.0;
+        boolean truncated = false;
         Mat sourceMat = null;
+        try {
+            for (int pass = 0; pass < 2; pass++) {
+                double[] scales = pass == 0 ? range.coarseScales() : TemplateScaleVariants.fineScales(bestScale);
+                List<Double> selectedScales = new ArrayList<>();
+                for (double scale : scales) {
+                    checkCancelled(stopRequested);
+                    int width = Math.max(1, (int) Math.round(template.getWidth() * scale));
+                    int height = Math.max(1, (int) Math.round(template.getHeight() * scale));
+                    if (scale < range.minimum() || scale > range.maximum()
+                            || width > source.getWidth() || height > source.getHeight()
+                            || !visited.add(TemplateScaleVariants.sizeKey(width, height))) continue;
+                    selectedScales.add(scale);
+                }
+                boolean parallel = allowParallelScales && (long) source.getWidth() * source.getHeight() >= PARALLEL_SCALE_MIN_PIXELS
+                        && Runtime.getRuntime().availableProcessors() > 1;
+                for (int index = 0; index < selectedScales.size();) {
+                    checkCancelled(stopRequested);
+                    if (sourceMat == null) sourceMat = toBgrMat(source);
+                    int batchSize = parallel ? Math.min(2, selectedScales.size() - index) : 1;
+                    BufferedImage first = scaledTemplate(template, selectedScales.get(index));
+                    SearchResult[] results = batchSize == 2
+                            ? matchPair(sourceMat, source, first, scaledTemplate(template, selectedScales.get(index + 1)),
+                                    threshold, maxResults, stopRequested)
+                            : new SearchResult[]{matchInSource(sourceMat, source, first,
+                                    threshold, maxResults, stopRequested)};
+                    for (int offset = 0; offset < results.length; offset++) {
+                        SearchResult result = results[offset];
+                        truncated |= result.truncated();
+                        for (MatchResult match : result.matches()) {
+                            truncated |= addOrMergeMatch(matches, match, maxResults);
+                        }
+                        MatchResult candidate = result.bestCandidate();
+                        if (candidate != null && (best == null || candidate.similarity() > best.similarity())) {
+                            best = candidate;
+                            bestScale = selectedScales.get(index + offset);
+                        }
+                    }
+                    index += batchSize;
+                }
+            }
+            checkCancelled(stopRequested);
+            if (best != null && best.matched()) retainBestCandidate(matches, best, maxResults);
+            matches.sort(Comparator.comparingDouble(MatchResult::similarity).reversed());
+            return new SearchResult(matches, best, truncated);
+        } finally {
+            release(sourceMat);
+        }
+    }
+
+    private BufferedImage scaledTemplate(BufferedImage template, double scale) {
+        return scaleVariants.image(template,
+                Math.max(1, (int) Math.round(template.getWidth() * scale)),
+                Math.max(1, (int) Math.round(template.getHeight() * scale)));
+    }
+
+    /** 返回缩放模板缓存的像素占用，供已有识别报告估算内存。 */
+    long scaleCacheBytes() {
+        return scaleVariants.cachedBytes();
+    }
+
+    /** 复用屏幕矩阵，单次匹配仅分配模板、掩码和误差矩阵并及时释放。 */
+    private SearchResult matchInSource(Mat sourceMat, BufferedImage source, BufferedImage template,
+                                       double threshold, int maxResults, BooleanSupplier stopRequested) {
+        checkCancelled(stopRequested);
+        try (NativeMatch match = computeErrors(sourceMat, template)) {
+            return collectMatch(match, source, template, threshold, maxResults, stopRequested);
+        }
+    }
+
+    /** 只并行原生计算；候选收集、停止回调及结果合并仍按原比例顺序执行。 */
+    private SearchResult[] matchPair(Mat sourceMat, BufferedImage source,
+                                     BufferedImage first, BufferedImage second, double threshold,
+                                     int maxResults, BooleanSupplier stopRequested) {
+        NativeMatch[] nativeMatches = new NativeMatch[2];
+        Throwable[] failure = new Throwable[1];
+        Thread worker = new Thread(() -> {
+            try {
+                nativeMatches[1] = computeErrors(sourceMat, second);
+            } catch (RuntimeException | Error exception) {
+                failure[0] = exception;
+            }
+        }, "opencv-scale-match");
+        worker.setDaemon(true);
+        try {
+            worker.start();
+            nativeMatches[0] = computeErrors(sourceMat, first);
+            joinWorker(worker);
+            checkCancelled(stopRequested);
+            if (failure[0] instanceof RuntimeException exception) throw exception;
+            if (failure[0] instanceof Error error) throw error;
+            return new SearchResult[]{
+                    collectMatch(nativeMatches[0], source, first, threshold, maxResults, stopRequested),
+                    collectMatch(nativeMatches[1], source, second, threshold, maxResults, stopRequested)
+            };
+        } finally {
+            // 即使调用线程取消/抛错，也必须等原生调用退出后才能释放共享屏幕矩阵。
+            joinWorker(worker);
+            for (NativeMatch match : nativeMatches) if (match != null) match.close();
+        }
+    }
+
+    /** 保留中断标志，确保当前批次的原生调用结束及资源释放，不启动后续批次。 */
+    private void joinWorker(Thread worker) {
+        boolean interrupted = false;
+        while (worker.isAlive()) {
+            try {
+                worker.join();
+            } catch (InterruptedException exception) {
+                interrupted = true;
+            }
+        }
+        if (interrupted) Thread.currentThread().interrupt();
+    }
+
+    private SearchResult collectMatch(NativeMatch match, BufferedImage source, BufferedImage template,
+                                      double threshold, int maxResults, BooleanSupplier stopRequested) {
+        checkCancelled(stopRequested);
+        return match.templateData().opaquePixelCount() == 0 ? SearchResult.empty()
+                : collectResults(match.errors(), source, template, match.templateData(),
+                        threshold, maxResults, stopRequested);
+    }
+
+    /** 返回自有模板/结果矩阵，屏幕矩阵只读共享；失败时仍释放全部已创建资源。 */
+    private NativeMatch computeErrors(Mat sourceMat, BufferedImage template) {
         Mat templateMat = null;
         Mat maskMat = null;
         Mat resultMat = new Mat();
+        boolean retained = false;
         try {
-            sourceMat = toBgrMat(source);
             TemplateData templateData = toTemplateData(template);
             templateMat = templateData.image();
             maskMat = templateData.mask();
             if (templateData.opaquePixelCount() == 0) {
-                return SearchResult.empty();
-            }
-
-            if (templateData.maskRequired()) {
+                // 全透明模板不需要原生搜索。
+            } else if (templateData.maskRequired()) {
                 Imgproc.matchTemplate(
                         sourceMat,
                         templateMat,
@@ -139,19 +309,31 @@ public final class OpenCvTemplateMatcher {
                 );
             }
 
-            return collectResults(
-                    resultMat,
-                    source,
-                    template,
-                    templateData,
-                    threshold,
-                    maxResults
-            );
+            NativeMatch match = new NativeMatch(templateData, resultMat);
+            retained = true;
+            return match;
         } finally {
-            release(resultMat);
-            release(maskMat);
-            release(templateMat);
-            release(sourceMat);
+            if (!retained) {
+                release(resultMat);
+                release(maskMat);
+                release(templateMat);
+            }
+        }
+    }
+
+    private record NativeMatch(TemplateData templateData, Mat errors) implements AutoCloseable {
+        @Override
+        public void close() {
+            errors.release();
+            templateData.mask().release();
+            templateData.image().release();
+        }
+    }
+
+    /** 在 Java 阶段及每轮原生匹配之间响应线程中断或播放器停止。 */
+    private static void checkCancelled(BooleanSupplier stopRequested) {
+        if (Thread.currentThread().isInterrupted() || stopRequested.getAsBoolean()) {
+            throw new CancellationException("图像识别已取消");
         }
     }
 
@@ -175,6 +357,22 @@ public final class OpenCvTemplateMatcher {
         return conversionHeap + nativeMatrices + resultHeap;
     }
 
+    /** 保守估算两比例批次的缓冲区；不含由服务另行计入的保留模板缓存。 */
+    long estimateScaleWorkingMemoryBytes(BufferedImage source, BufferedImage template) {
+        return estimateScaleWorkingMemoryBytes(source, template, TemplateScaleRange.DEFAULT);
+    }
+
+    long estimateScaleWorkingMemoryBytes(BufferedImage source, BufferedImage template, TemplateScaleRange range) {
+        long sourcePixels = (long) source.getWidth() * source.getHeight();
+        long maxTemplatePixels = (long) Math.min(source.getWidth(),
+                Math.max(1, (int) Math.round(template.getWidth() * range.maximum())))
+                * Math.min(source.getHeight(),
+                Math.max(1, (int) Math.round(template.getHeight() * range.maximum())));
+        // 屏幕转换/矩阵、两份原生误差、一份 Java 误差，以及两份模板转换/矩阵/图像。
+        return sourcePixels * (7L + 3L + 2L * Float.BYTES + Float.BYTES)
+                + maxTemplatePixels * (2L * (8L + 4L + Integer.BYTES));
+    }
+
     /** 将误差矩阵转换为相似度候选，合并重叠位置并限制结果数量；满分阈值仍按原像素复核。 */
     private SearchResult collectResults(
             Mat resultMat,
@@ -182,7 +380,8 @@ public final class OpenCvTemplateMatcher {
             BufferedImage template,
             TemplateData templateData,
             double threshold,
-            int maxResults
+            int maxResults,
+            BooleanSupplier stopRequested
     ) {
         int templateWidth = template.getWidth();
         int templateHeight = template.getHeight();
@@ -204,19 +403,24 @@ public final class OpenCvTemplateMatcher {
         boolean truncated = false;
 
         for (int index = 0; index < errors.length; index++) {
-            if ((index & 0xFFFF) == 0
-                    && Thread.currentThread().isInterrupted()) {
-                throw new CancellationException("图像识别已取消");
-            }
+            if ((index & 0xFFFF) == 0) checkCancelled(stopRequested);
             double error = errors[index];
             if (!Double.isFinite(error)) {
                 continue;
             }
 
+            boolean requiresExactRecheck = threshold == 1.0
+                    && error <= maximumSquaredError * PERFECT_MATCH_RECHECK_ERROR_RATIO;
+            // 非命中且无法改善最佳候选的位置无需计算坐标、开平方或创建候选。
+            // 满分复核必须先保留：原生误差的大小不能代替原像素误差。
+            if (!requiresExactRecheck && error >= bestError
+                    && (truncated || error > maximumAcceptedError)) {
+                continue;
+            }
+
             int x = index % columns;
             int y = index / columns;
-            if (threshold == 1.0
-                    && error <= maximumSquaredError * PERFECT_MATCH_RECHECK_ERROR_RATIO) {
+            if (requiresExactRecheck) {
                 // 已有精确满分且结果已截断时，剩余候选无法改善最佳结果。
                 if (truncated && bestError == 0.0) continue;
                 error = exactSquaredError(source, template, x, y, templateData.alphaThreshold());

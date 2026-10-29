@@ -22,6 +22,43 @@ class ScreenCaptureControllerTest {
     @Test void recordingCaptureSkipsTimerAndCancelRestoresAllWindowState() throws Exception { runLifecycle(false); }
     @Test void simulatedCompletionRestoresStateAndIgnoresOldWorker() throws Exception { runLifecycle(true); }
 
+    @Test void confirmationPassesGlobalLogicalBoundsBeforeDisposingOverlay() throws Exception {
+        assumeFalse(GraphicsEnvironment.isHeadless());
+        SwingUtilities.invokeAndWait(() -> {
+            JFrame frame = new JFrame();
+            AtomicReference<Rectangle> selected = new AtomicReference<>();
+            AtomicReference<BufferedImage> result = new AtomicReference<>();
+            ScreenCaptureController controller = new ScreenCaptureController(frame,
+                    (image, bounds) -> { result.set(image); selected.set(bounds); }, () -> fail(), Assertions::fail,
+                    false, (device, bounds) -> { throw new AssertionError("确认选区不能重新截图"); });
+            ScreenSelectionOverlay overlay = new ScreenSelectionOverlay(frame,
+                    new BufferedImage(90, 60, BufferedImage.TYPE_INT_RGB), new Rectangle(-12000, -12000, 60, 40),
+                    frame.getGraphicsConfiguration(), image -> {
+                        try {
+                            var complete = ScreenCaptureController.class.getDeclaredMethod("completeCapture", long.class, BufferedImage.class);
+                            complete.setAccessible(true); complete.invoke(controller, 7L, image);
+                        } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+                    }, () -> fail(), Assertions::fail);
+            try {
+                // 构造冻结的 150% 图像和逻辑选区，不显示窗口、不捕获桌面。
+                Object canvas = field(overlay, "canvas");
+                ((Component) canvas).setSize(60, 40);
+                var selection = canvas.getClass().getDeclaredField("selection"); selection.setAccessible(true);
+                selection.set(canvas, new Rectangle(10, 6, 20, 12));
+                for (String name : new String[]{"capturing", "activeSessionId", "overlay"}) {
+                    var target = ScreenCaptureController.class.getDeclaredField(name); target.setAccessible(true);
+                    target.set(controller, name.equals("capturing") ? Boolean.TRUE : name.equals("activeSessionId") ? 7L : overlay);
+                }
+                var confirm = ScreenSelectionOverlay.class.getDeclaredMethod("confirmSelection"); confirm.setAccessible(true);
+                confirm.invoke(overlay);
+                assertEquals(new Rectangle(-11990, -11994, 20, 12), selected.get());
+                assertEquals(30, result.get().getWidth()); assertEquals(18, result.get().getHeight());
+                assertNull(field(controller, "overlay"));
+            } catch (ReflectiveOperationException error) { throw new AssertionError(error); }
+            finally { overlay.closeOverlay(); frame.dispose(); }
+        });
+    }
+
     private void runLifecycle(boolean complete) throws Exception {
         assumeFalse(GraphicsEnvironment.isHeadless());
         AtomicReference<JFrame> owner = new AtomicReference<>();

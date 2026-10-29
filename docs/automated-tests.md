@@ -2,6 +2,396 @@
 
 本文最初记录 TEST-01：让已有独立检查由 Maven 实际执行；该次接入未修改生产业务逻辑。后续新增覆盖、夹具调整和真实结果按轮次保留在下文，不能把历史测试数量当作当前总数。当前项目概况见 [文档索引](README.md)。
 
+最近一次验证为 2026-10-28 的错误报告：新增 **14 项标准入口**，相关 **39 项**及完整 **382 项**全部通过，失败/错误/跳过均为 0；编译及运行模块分析通过。此前录制截图前释放鼠标、节点查找、多选、复制粘贴、菜单、撤销和其他轮次的数量按原轮次保留，尚未重新生成发行包。
+
+## 2026-10-28：1.2.0 错误报告
+
+新增统一报告写入器、设备信息采集器及未捕获异常处理器。统一错误弹窗先记录原异常，再沿用弹窗流程；状态栏中的 MR/配置及文字提取失败、已捕获的部分输入释放和窗口恢复错误也接入报告。普通提示、无异常对象的警告和正常取消不写报告；原本使用错误弹窗的消息仍记录并明确区分调用位置与真实异常堆栈。每次在应用根目录 `log/` 原子创建唯一命名的 UTF-8 文件，不覆盖旧报告；信息采集及日志失败不递归产生弹窗。
+
+新增 **14 项标准入口**：
+
+- `ErrorReportWriterTest` **8 项**：中文路径及内容、版本/时区/线程、原因链及 suppressed 异常、消息调用位置、同一毫秒 48 次并发及旧文件保全、设备接口缺失、日志目录被文件阻挡、目录访问失败后恢复、递归保护及配置/宏/截图数据保全。
+- `UncaughtErrorHandlerTest` **4 项**：先落盘后通知、原线程及原处理器保留、日志/原处理器失败仍通知原错误、通知失败仅额外记录、处理器重入及后续错误恢复。
+- `DeviceInformationTest` **1 项**：实际采集操作系统、Java、CPU、进程、内存及显示器字段，不整份输出环境变量或个人属性。
+- `LegacyRegressionTest#errorReporting` **1 项隔离入口**：真实调用统一错误/警告入口，并实际触发后台线程和 EDT 的未捕获异常；检查默认应用根目录、单次报告、不重复安装、事件线程继续处理、无图形环境、日志目录写入失败及恢复，不显示窗口。旧配置安全检查保留文件/内存/临时文件断言，另检查新日志目录及详细报告。
+
+相关定向共 **39 项，失败 0、错误 0、跳过 0，退出码 0**，20:35:19 完成，包含上述检查及配置读写、弹窗标题栏、单实例、截图控制器、识别测试页和 OCR 窗口回归。完整 `mvn test` 于 20:37:59 完成：**382 项，失败 0、错误 0、跳过 0，退出码 0**。日志在 `target/error-reporting-20261028/`：`directed-first.log`（新增 14 项首次通过）、`directed-verified.log`、`full-final.log`、`compile-first.log` 及 `compile-final.log`。运行模块分析 `runtime-modules.log` 确认新引用的 `jdk.management` 被打包脚本使用的静态分析识别，未新增外部依赖；`git diff --check` 通过。
+
+Surefire 显式设置 `macro.errorReport.applicationDirectory`，常规检查触发的报告位于 `target/test-error-reports/log/`；独立 JVM 不继承该参数，在各自新建的类来源目录下验证默认 `log/` 位置。全部旧诊断产物保留，没有向项目根目录的个人日志中注入模拟错误。实际样本已核对 Windows 构建、CPU、内存，以及 2560×1600 / 150% 显示信息；内存为采样，不是原生分配追踪。未重建发行包，发行包内实际弹窗、连续异常体验及安装目录权限仍待人工验收。
+
+## 2026-10-28：1.2.0 录制截图前释放鼠标
+
+录制截图请求先保留原有宏内配对释放并挂起事件录制，主窗口在隐藏/冻结画面前调用按会话校验的准备方法。新 `CaptureMouseRelease` 仅检查当前物理左/右/中键的按下高位，发送一个只含所需 UP 标记的原生输入；无按下不发送，不移动、不发送 DOWN、键盘或侧键，也不重新按住。发送失败取消截图并提示；旧会话和重复准备不重复发送。过滤器持续忽略自动及随后重复释放，直到有效的新按下；挂起/控件内的旧输入不能解除保护，普通鼠标移动不被该标记持续阻止。原暂停、取消、时间补偿和普通采集页保留。
+
+新增 **11 项标准入口**：
+
+- `CaptureMouseReleaseTest` **10 项**：无按下与低位误报、三种按钮及对应 UP、组合输入及发送前过滤、真实 JNA INPUT 结构往返（不发送）、禁止移动/DOWN/键盘/侧键标记、发送失败/过滤失败、重复 UP、恢复后迟到的挂起按下、控件按下保护及新录制重置。状态和发送接口全部注入替身，过滤时间注入模拟时钟。
+- `LegacyRegressionTest#recordingCaptureRelease` **1 项隔离入口**，运行 `RecordingCaptureReleaseTest` 内的 **8 个场景**：F10/按钮请求后释放先于模拟截图、宏内动作顺序及配对坐标、自动/真实重复释放和新点击、取消不重新按下、暂停时未录入的按下仍释放并保留暂停、控件按下、三键及原键盘规则、重复/旧会话/停止、失败取消及重试、普通暂停/无回调不发送。八场景按方法组织，不重复计入 JUnit 总数。生产类和 AppConfig 副本位于新建隔离目录，不读取个人配置、不注册 Hook、不截图、不发送真实输入。
+
+相关定向 `CaptureMouseReleaseTest,ScreenCaptureControllerTest,LegacyRegressionTest#recordingCaptureRelease+recordingPause+recordingMouseCoordinates+recordingControlInputFilter`：**20 项，失败 0、错误 0、跳过 0，退出码 0**，20:11:05 完成。完整 `mvn test`：**368 项，失败 0、错误 0、跳过 0，退出码 0**，20:14:44 完成；独立 `mvn compile` 于 20:16:42 成功。日志在 `target/recording-capture-release-20261028/`：`directed-second.log`、`full-final.log`、`compile-final.log`；`git diff --check` 通过。
+
+首轮定向 14 项中 1 项失败：新夹具所谓“控件外点击”仍使用旧控件区域内坐标，且发生在同一个 Windows 计时边界，触发既有保护。将该点击改为新旧区域都在外部的真实测试坐标，保留原配对及零污染断言，得到上述通过结果；保留 `directed-first.log`。独立单元首轮 10 项已通过，日志 `unit-first.log`。没有放宽区域/同毫秒过滤或跳过检查。
+
+实际鼠标拖拽在 F10 前后是否结束、左右键交换、高权限目标、全局 Hook 投递和真实截图画面仍需 Windows 11 / 150% DPI 人工验收。此次没有操作用户真实输入或重建发行包。当前调用顺序、原生接口依据及人工检查见[录制控制栏](recording-control-bar.md#截图前释放鼠标)。
+
+## 2026-10-28：1.2.0 节点查找
+
+新增 `TimelineNodeSearch`，查找栏仅处理当前可见节点参数，不读取图片、不执行识别、不修改流程或选择。支持带 #/前导零/全角的精确编号、中文动作及英文类型、按键名称/左右侧、模板文件名，以及空格分隔的组合条件。单个英文字母按独立名称匹配，避免 A 命中 RELEASE/IMAGE 等类型中的字符。Ctrl+F 打开，Enter/F3 和 Shift+Enter/Shift+F3 循环前后切换；金色外框与原选择/播放标记共存，结果位置在布局后滚动，过时请求丢弃。隐藏时不查找，模型重建仅更新结果不抢滚动。
+
+新增两类共 **18 项**：
+
+- `TimelineNodeSearchTest` **7 项**：编号精确定位/范围/超长输入、空查询和内部 END 排除、全部普通动作、中文及英文类型、多个条件、鼠标按钮、按键本地化与常量别名/左右侧、单字母精确名称、模板文件名及字面特殊字符；父目录和隐藏 ID 不参与匹配。
+- `TimelineNodeSearchUiTest` **11 项**：按钮及局部快捷键、前后循环与空结果、多选/历史/分支保全、播放只读与进度共存、关闭重开及换宏、插入/删除/移动/撤销/模板更名后刷新、文字输入框隔离、旧行内编辑及拖动取消、视口外结果完整进入视口、关闭/换宏丢弃排队滚动、金色外框与多选共存、820/1000 宽度及 150% 离屏预览。使用隐藏组件和独立 Clipboard，不读写系统剪贴板或个人文件，不发送输入。
+
+实际结果：扩展单字母检查前相关定向 **70 项**全部通过，日志 `target/timeline-node-search-20261028/directed-final.log`；最终完整 `mvn test` **357 项，失败 0、错误 0、跳过 0，退出码 0**，19:23:32 完成，日志 `full-final.log`，其中新增检查为 7+11 项。独立编译于 19:25:08 通过，日志 `compile-final.log`；`git diff --check` 通过。Windows 11 / 150% DPI 的真实按键、焦点、滚动与连续操作仍需人工验收，未重新打包。
+
+开发记录保留：`regression-first.log` 的 50 项有 1 项因旧测试从整个面板取首个文本框而误取隐藏查找框；将取值范围限定在时间线轨道，原待机延迟/撤销断言保留。`new-tests-first.log` 的 17 项有 12 项失败，修复首次查找时对 null 当前 ID 的不可变集合查询，并补齐与系统语言无关的按键别名。`new-tests-second.log` 的 30 项有 2 项夹具失败：重复添加 FOUND 分支导致检查读到旧目标、把卡片文字的彩色抗锯齿像素算作金色外框；分别改为修改原分支、仅统计外边框，继续断言目标不变及关闭后外框消失。没有通过跳过或放宽业务要求取得最终通过。
+
+## 2026-10-28：1.2.0 多选与批量编辑
+
+时间线以节点 ID 集合保存选择，并保留主选中节点及 Shift 锚点。Ctrl 点选、Shift 连选、Ctrl+Shift 追加区间、Ctrl+A 全选、Esc/空白取消；坐标区域的修饰键点击只选择，普通点击保留行内编辑。多选时显示数量和批量操作栏，右键宫格使用批量编辑/复制所选/删除所选；播放查看可多选和复制，修改均受编辑权限保护。
+
+批量编辑只应用勾选字段，分别设置普通动作延迟与具有 RETRY 行为的图像节点重试间隔，使用既有非负 long 输入校验。非连续节点整组拖动后保持相对顺序，预览不写模型，影像有数量标记；提交保留 ID、指定跳转和动作延迟。批量删除不转移延迟，原失效指定引用保留给预检报告。整组复制使用剪贴板版本 2，内部 JUMP 映射到对应副本，外部目标缺失时整组拒绝；单节点版本 1 及原目标语义保持。每批操作只记一步撤销和一次通知，撤销恢复选择及锚点。
+
+新增 `TimelineMultiSelectionTest` **20 项**，覆盖修饰键/坐标选择、空白与全选/取消、刷新/换宏、输入框和批量按钮焦点、混合节点批量修改、0/Long.MAX_VALUE/无效输入、无变化与旧对象零写入、播放权限、非连续首尾移动、真实组件拖动预览和取消、150% 离屏图、删除引用及全部节点、MR 保存重载、整组复制的内部/外部跳转和来源删除、缺失外部目标整组拒绝、旧菜单保护，以及实际 MacroPlayer 配合计数 Robot 检查移动后与撤销后的执行序列。剪贴板使用独立 Clipboard，不读写系统内容；不发送真实键鼠输入，不访问个人宏或配置。
+
+本轮完整 `mvn test`：**339 项，失败 0、错误 0、跳过 0，退出码 0**，16:23:26 完成；之后补齐批量按钮获得焦点时的 Delete/Esc 及输入框保护，相关 **75 项**于 16:26:29 复测通过，失败/错误/跳过 0、退出码 0。`mvn compile` 退出码 0。日志目录 `target/timeline-multi-select-20261028/`：`full-final.log`、`directed-focus-verified.log`、`compile-final.log`，`git diff --check` 通过。
+
+首轮相关 102 项中 1 项失败：新增的组合快捷键说明在 820 宽度下被裁切。拆成 Ctrl/Shift 两行后，布局专项及完整/最终相关回归通过；保留 `directed-final.log` 和 `layout-fixed.log`，没有放宽原布局断言。150% 离屏图已核对，路径由新增测试打印在日志中；真实 Windows 11 鼠标修饰键、连续拖动与焦点体验仍需人工验收。没有重新打包。
+
+## 2026-10-28：1.2.0 节点复制／粘贴及 Ctrl+C／Ctrl+V
+
+`TimelineNodeClipboard` 将单节点和来源 MR 目录保存为带版本的 UTF-8 快照，使用独立 InputStream 格式传输；另提供可读 String 摘要，保留普通文字粘贴用途。仅接受节点专用格式，普通文本/图片或文本形式的 JSON 不作为节点；读取和写入限制为 1 MiB，拒绝无效类型/内容，不解析 Java 对象序列化。复制不读取、复制或覆盖模板文件。
+
+粘贴重新解析独立对象，经原插入入口分配新 ID，固定放在选中节点后，无锚点时追加；不使用“插入动作”的前/后默认方向。JUMP 保留目标 ID 及分支延迟，目标缺失或指向 END 拒绝；RETRY 接副本自身，EXECUTE 接新后继，TERMINATE 接本宏 END。同目录模板路径不改，跨目录转换为来源 MR 下的原图片绝对路径，缺失图片引用仍按原规则保留。一次粘贴对应一步撤销，并同步主窗口使用的流程；复制不占历史。只读查看可复制，粘贴复用编辑权限及迟到回调保护，Ctrl+C／Ctrl+V 不抢占文字输入框。
+
+新增两类共 **20 项**：
+
+- `TimelineNodeClipboardTest` **8 项**：全部六种普通动作、文字摘要、对象与分支独立性、图像/窗口配置、同目录与跨目录路径、缺失/空模板引用、普通文字/JSON 不误认、坏数据/格式版本/容量拒绝、无效动作及 END 拒绝、剪贴板忙碌处理。
+- `TimelineNodeCopyPasteTest` **12 项**：新 ID 与插入位置、重复粘贴及源删除、空宏追加、完整图像配置/JUMP/RETRY 和 MR 往返、缺失目标零写入、跨宏同名图片路径及原文件保全、只读复制/禁止粘贴、剪贴板替换/坏内容、旧菜单/旧锚点保护、Ctrl+C／Ctrl+V 及输入框隔离、菜单粘贴/撤销，以及实际播放器配合计数 Robot 分别执行副本和撤销后的流程，不发送真实按键。
+
+原生表示修正后的定向 `TimelineNodeClipboardTest,TimelineNodeCopyPasteTest,TimelineUndoTest`：**33 项，失败 0、错误 0、跳过 0，退出码 0**，15:50:27 完成，日志 `target/timeline-node-clipboard-20261028-153855/transport-tests.log`。最终完整 `mvn test`：**319 项，失败 0、错误 0、跳过 0，退出码 0**，15:53:37 完成，日志 `full-final.log`。更早相关 83 项也通过，属于原生格式修正前，见 `directed-final.log`；初次新增夹具的 var 复合声明编译错误修正后，33 项通过，前两轮日志也分别保留。独立编译及 `git diff --check` 通过。
+
+仅独立 Clipboard 单测不能证明 Windows 原生格式能保留：初版文本格式被映射为普通文字，独立节点格式丢失。改用专用 UTF-8 InputStream 格式后，`NodeClipboardNativeProbe.java` 将独立剪贴板的实际 Transferable 经当前 Windows JDK 原生编解码往返，核对私有节点字节与 Unicode 中文摘要各自一致，且私有内容不经过对象序列化。最终日志 `native-probe-stream.log`；早期失败及诊断编译日志均保留。该临时探针使用的 JDK 内部格式接口只用于诊断，生产代码仅使用公开 AWT Clipboard API，不新增应用 JVM 参数。
+
+`NodeClipboardPreview.java` 使用独立剪贴板和真实 JMenuItem 离屏检查四宫格、底部粘贴/撤销、禁用状态及无裁切，输出 `normal-100.png`、`normal-150.png`、`paste-hover-150.png`、`read-only-150.png`、`no-node-clipboard-150.png`、`empty-space-150.png`。已核对普通、只读及空白轨道 150% 图，日志 `preview.log`。本轮没有读写系统剪贴板、显示真实菜单、截图或发送键鼠输入；真实 Windows 桌面焦点和按键/系统剪贴板仍需人工验收。文档和快捷键设置同步，未打包、提交、推送或升版，既有数据与诊断保留。
+
+## 2026-10-28：1.2.0 四宫格右键菜单
+
+节点菜单使用直属 `JMenuItem` 配合两列布局：编辑/插入在上排，复制/删除在下排，底部整行撤销和 Ctrl+Z 提示；空白轨道仅显示插入和撤销两项。使用现有主题和自绘图标统一圆角、间距、文字、悬停、删除红色及禁用态，不改动作、确认和回调保护。图标按菜单项创建时缓存，不在每次重绘时建立新组件。
+
+更新既有 `TimelinePlaybackProtectionTest`，按菜单文字与操作识别权限，避免依赖旧列表下标；播放查看仍允许复制，其余操作即使绕过禁用状态直接调用监听也不能修改流程。没有新增仅镜像外观的 JUnit 检查。
+
+首轮 `TimelineUndoTest,TimelineUndoHistoryTest,TimelineNodeDragTest,LegacyRegressionTest`：**63 项**通过，15:23:37 完成。图标缓存调整后，最终 `TimelineUndoTest,TimelineNodeDragTest,LegacyRegressionTest#timelinePlaybackProtection+shortcutsSettings+modelessActionEditor`：**31 项，失败 0、错误 0、跳过 0，退出码 0**，15:25:01 完成并包含实际编译。日志分别为 `target/timeline-grid-menu-20261028-152059/directed-first.log` 和 `directed-final.log`；`git diff --check` 通过。本轮仅改菜单外观及对应既有夹具，没有重复完整回归。
+
+同目录 `GridMenuPreview.java` 核对 2×2 几何、底部撤销跨度、直属 MenuElement 和只读权限，生成 100%/150% 普通、编辑悬停、删除悬停、禁用和空白轨道预览，日志 `preview-first.log`。已核对 `normal-150.png`、`delete-hover-150.png`、`read-only-150.png`、`empty-space-150.png`；全部为离屏绘制，未弹出真实菜单、不写系统剪贴板或发送键鼠输入。实际 Windows 桌面的弹出位置、边缘和键盘交互仍需人工复核。未打包、提交、推送或升版。
+
+## 2026-10-28：1.2.0 Ctrl+Z 时间线撤销
+
+`ActionTimelinePanel` 在确认插入、删除、替换、拖动、坐标/延迟/重试行内提交及待机开关时保存独立流程快照，撤销恢复实际节点 ID、顺序、选择、END、分支与数值，不重建或猜测跳转目标。快照不包含图片或个人文件，最多 100 条并以 32 MiB 序列化字节预算淘汰旧记录；单个超大宏仍保留最近一步。取消、非法输入和无实际变化的操作不入栈。仅加入撤销，不建立重做历史。
+
+Ctrl+Z 绑定限定在时间线及其子控件，文字输入框不触发流程撤销；右键菜单提供同一入口。录制、播放、暂停与停止收尾均复用编辑权限保护，旧菜单/弹窗/行内会话不能迟到写回。撤销通过原回调同步主窗口播放/保存数据，关闭旧对象的编辑器。加载新宏、录制新流程及跨目录另存为清空历史；同目录保存保留历史，撤销不自动修改磁盘。跨目录保存成功后同时关闭旧路径基准下的编辑窗口；失败不提前清空历史或改变基准。
+
+- 新增 `TimelineUndoHistoryTest` **3 项**：未变更不记录、深拷贝/重复恢复独立性、条数上限、字节预算及单个超大快照的最近一步保留、清空。
+- 新增 `TimelineUndoTest` **13 项**：删除目标与转移延迟还原、跳转关系与 MR 往返、拖动后编号/路由恢复、插入/替换逐步撤销、完整图像配置及窗口描述隔离、坐标/普通延迟/重试/待机延迟、无效/取消/无变化过滤、待机偏好写入拒绝、运行状态禁用、旧回调失效、换宏清空与同图刷新保留、Ctrl+Z 输入框保护且无 Ctrl+Y、空时间线菜单撤销及过时菜单保护。
+- 扩展 `ModelessActionEditorTest` 的既有隔离入口：恢复主窗口权威流程与动作、关闭过期编辑器、同目录保存保留历史、撤销不自动写盘、无图片时跨目录另存为也清空历史并关闭旧创建窗口、加载实际磁盘内容后清空。
+- 扩展 `TimelineNodeDragTest` 的既有计数 Robot 播放检查：拖动后及撤销后分别运行真实播放器，确认原目标及原始默认后继恢复，不发送真实按键。快捷键设置检查同步 Ctrl+Z 文案和窄宽布局。
+
+最终相关定向 `TimelineUndoTest,TimelineUndoHistoryTest,TimelineNodeDragTest,LegacyRegressionTest`：**63 项，失败 0、错误 0、跳过 0，退出码 0**，15:11:54 完成，日志 `target/timeline-undo-20261028-150310/directed-final.log`。完整 `mvn test`：**299 项，失败 0、错误 0、跳过 0，退出码 0**，15:16:32 完成，日志 `full-verified.log`，包含收尾补充的跨目录编辑窗口关闭断言。此前 47 项既有定向、16 项新增定向以及首轮完整 299 项均通过，日志独立保留。编译及 `git diff --check` 通过，见该目录的编译和差异检查日志。
+
+`UndoPreview.java` 使用合成流程、隐藏面板和未弹出的右键菜单生成 `undo-menu-150.png`、`restored-timeline-150.png`，已核对“撤销 / Ctrl+Z”入口与恢复后的原目标指向；日志 `preview.log`。没有显示真实窗口、注册新全局监听或发送键鼠输入；真实 Windows 11、150% DPI 下焦点切换、按键和原生菜单交互仍需人工确认。未打包、提交、推送或升版，原未提交修改、个人数据和诊断产物保留。
+
+## 2026-10-28：1.2.0 识别文字框外观
+
+文字区复用主题圆角面板和深色滚动条，统一内边距、选择文字及选中文字颜色；无内容时使用独立居中标签，有内容时保留左上排版、选择和滚动。清除、换图、提取中及空结果都切回“无信息”，不改变 OCR 或匹配逻辑。
+
+更新既有异步结果检查，验证无文字显示居中标签、有文字隐藏标签、清除后恢复空状态；未新增仅镜像外观的测试。定向 `ImageRecognitionFrameTest,ImageRecognitionTestOptionsTest,RecognitionWindowVisibilityTest`：**10 项，失败 0、错误 0、跳过 0，退出码 0**，10:59:41 完成并包含实际编译。日志 `target/recognition-text-style-20261028-105912/directed.log`；`git diff --check` 通过。
+
+同目录 `TextBoxPreview.java` 使用合成文字与隐藏窗口，检查空状态切换并生成 `empty-150.png`、`text-150.png`，已核对居中、圆角边框和长文字滚动条；日志 `preview.log`。不显示真实窗口、不调用 OCR、不截图或写剪贴板。未重跑完整测试，未打包、提交或推送，版本保持 1.2.0。
+
+## 2026-10-28：1.2.0 识别测试页与模板文字
+
+窗口最小尺寸固定为 1080×640 逻辑像素，仍可拉大；移除正文顶部标题/说明，保留识别范围。右侧文字区后台读取当前模板，默认五种内置语言，无文字显示“无信息”，有结果可复制；提取失败单独提示并允许重试。隐藏预览准备不启动 OCR，换图/清除/关闭通过独立停止信号丢弃旧结果；同一窗口只保留一个在途原生任务和最新待处理模板，不将过早的 Future 取消回调当作原生调用已结束。屏幕匹配不等待模板文字提取。
+
+阈值右侧新增缩放开关与独立上下限：下限 1%～100%，上限 100%～400%，最多三位小数，默认精确 2/3～1.5。严格格式化器同时覆盖 Enter、箭头提交及识别前的文本校验，默认显示舍入不改变实际默认比例。新增 `TemplateScaleRange` 按本次测试请求传递给现有匹配器和内存估算，原入口仍使用默认值；原尺寸优先、最多十个粗查/四个细查、多目标合并和取消保持原语义。测试修改不写回动作或 MR，不改变播放器范围。
+
+- 新增 `TemplateScaleRangeTest` **4 项**：非法范围拒绝、默认候选顺序不变、范围内有限候选及端点、真实 OpenCV 合成画面中的 50%/200% 命中与范围外排除、原尺寸仍优先。
+- 新增 `ImageRecognitionTestOptionsTest` **6 项**：最小尺寸和范围保留、控件忙碌状态、独立小数/完整文本校验、隐藏预览不自动提取、空结果/重试/复制启用、快速换图只处理最新模板、清除与关闭丢弃迟到结果、失败提示与恢复。使用可控文字引擎，不截图、不写剪贴板。
+
+定向 `ImageRecognitionTestOptionsTest,TemplateScaleRangeTest,ImageRecognitionFrameTest,RecognitionWindowVisibilityTest,ScaleMatchingTest,ScaleMatchingParallelTest,ScreenRecognitionServiceTest,RecognitionSessionTest,ScaleMatchingEditorTest,WindowRecognitionEditorTest,OcrServiceTest`：首轮 **47 项**通过，10:45:30 完成。随后加强缩放格式化器，完整 `mvn test`：**283 项，失败 0、错误 0、跳过 0，退出码 0**，10:48:14 完成。最后仅加宽缩放输入框避免六位显示截断，再次定向 **47 项全部通过**，10:51:29 完成。日志位于 `target/recognition-test-20261028-103904/`，依次为 `directed-first.log`、`full-first.log`、`directed-final.log`；独立编译也通过，见 `compile-first.log`、`compile-final.log`。`git diff --check` 通过。
+
+任务目录内 `RecognitionTestPreview.java` 通过真实 OCR 引擎与五种语言从合成模板读出“测试文字 OCR 123”，随后检查按钮在最小窗口内可用、清除无旧文字、缩小请求受最小尺寸约束。最终日志 `preview-default-theme.log`、图片 `final-template-text-150.png` 和 `final-empty-150.png` 沿用实际启动入口的默认 Swing 外观及自绘组件，离屏绘制并核对；临时 FlatLaf 探针也保留，但不作为应用真实启动外观。首次预览夹具误把隐藏滚动条的内部按钮视为可见控件，诊断失败日志保留为 `preview-first.log`；修正夹具后通过，未为此修改生产代码。OCR 缓存、合成模板、源码和输出均留在 D 盘任务目录。
+
+未显示真实窗口、采集桌面、发送键鼠输入或写系统剪贴板；实际 Windows 11、150% DPI 下拖动窗口边框、焦点/输入法和复制仍需人工验收。未打包、提交、推送或升版，旧产物与个人数据保留。
+
+## 2026-10-27：1.2.0 图像编辑字段按需显示
+
+生产修改仅在 `ActionEditorDialog`：图像成功/失败选择跳转才显示对应目标，成功点击才显示点击方式，失败点击才显示 X/Y，任一行为重试才显示重试延迟，指定窗口范围才显示窗口按钮。隐藏时控件与标签一起收起，不移除控件或清空当前编辑值；整排隐藏后收拢后项，保留成功/失败及 X/Y 的左右配对，窗口继续固定 580。普通动作表单沿用原配对位置。
+
+不使用重试时，隐藏延迟框的临时空值/非法文本不阻止保存，沿用此前合法值；切回重试后仍校验非负 long。切换回普通动作重置共用延迟框的可见/启用状态。没有修改播放器、存储或 MR 格式。更新既有编辑器检查的可见性与布局断言，未新增只镜像界面的测试类或测试数量。
+
+`mvn '-Dtest=ImageJumpEditorTest,ImageClickEditorTest,ScaleMatchingEditorTest,WindowRecognitionEditorTest,DarkComboBoxStyleTest,LegacyRegressionTest' test`：**46 项，失败 0、错误 0、跳过 0，退出码 0**，17:51:18 完成，日志 `target/editor-conditional-20261027-174345/directed-final.log`。覆盖编辑器保存/取消、目标身份、点击坐标、窗口预览、数值、普通动作、非模态和播放编辑保护；首轮同 46 项也通过，配对布局微调后复测。`mvn compile` 退出 0，17:53:08 完成，日志 `compile-final.log`；`git diff --check` 通过。
+
+任务目录的 `ConditionalEditorPreview.java` 使用合成模板/窗口描述和实际 Swing 组件，核对 **6×6×2 = 72 种成功/失败/范围组合**的字段及标签可见性、边界和不重叠；另验证切换后目标、点击方式、失败坐标保留，隐藏重试框沿用合法 250ms、重新显示空值被拒绝、源 333ms 配置未污染，以及切回普通动作恢复可见且可用的 0ms 延迟。诊断不计入 JUnit 项目数，日志 `preview-final.log`。
+
+最终离屏图保存在该目录的 `final/`，包括默认、成功跳转、双方点击、指定窗口点击及普通动作；已核对默认、双方点击和指定窗口点击的 150% 图。初始线性重排图片保留，最终改为整排收拢、左右配对，避免拆开 X/Y 或错列成功/失败字段。窗口保持不可见，不枚举外部目标、不截图、不发送输入；真实桌面焦点、Tab 顺序与菜单展开仍需人工确认。未打包、提交、推送或升版，现有产物、未提交修改和个人数据保留。
+
+## 2026-10-27：1.2.0 失败点击与图像连线标注
+
+根据用户确认，成功和失败行为提供同一组选项，JUMP 固定最后。成功点击仍使用本次命中范围及中心/随机选点；失败点击新增独立 `failureClickX/failureClickY` 屏幕逻辑坐标，默认空、0 和负值有效，不使用上次命中或窗口相对坐标。失败点击时必须两项完整，保存/加载/播放预检校验；普通失败行为保持原语义，识别异常不转为失败点击。播放共用原来的暂停/停止、完整左键点击与最终输入释放；失败点击后执行也预检后继，避免先点击再发现缺失分支。MR 格式不变，路径另存为保留两项坐标。编辑器增加两项控件，高度从 540 调整为 580。
+
+连线标注仅保留在图像出向及进入图像节点的连线上，普通动作之间恢复只显示延迟与箭头。进入图像的真实分支等待与下方重试回路时间分开，未改动 delay 语义。
+
+在既有三类测试中新增 **9 项**，并更新旧的成功/失败菜单差异断言：
+
+- `ImageClickPlaybackTest` 从 11 项增为 **17 项**：新增失败固定坐标与后项间隔、失败点击终止无限循环、成功/失败坐标隔离及旧命中不复用、缺失任一坐标/后继在此前输入前拒绝、不同阶段停止与释放、暂停后恢复及按下/释放异常清理；使用计数 Robot，无真实键鼠输入。
+- `ImageClickStorageTest` 从 3 项增为 **5 项**：新增两种失败点击的 MR 往返与另存为、0/负坐标、非点击时保留配置、部分缺失拒绝且既有文件不变；旧宏无坐标继续兼容。
+- `ImageClickEditorTest` 从 3 项增为 **4 项**：补充菜单相同且跳转置末、坐标与成功点击方式独立启用、保存/回显/取消隔离、空值/负号/int 溢出拒绝、0 与 int 最小值可用、不启用的无效坐标不阻止保存、150% 新控件边界。`ImageClickModeTest` 保持 4 项，更新两种结果菜单一致检查。
+
+最终定向：`mvn '-Dtest=ImageClickModeTest,ImageClickEditorTest,ImageClickStorageTest,ImageClickPlaybackTest,ImageJumpPlaybackTest,WindowRecognitionPlaybackTest,ScaleMatchingStorageTest,TimelineNodeDragTest,TimelineJumpLayoutTest,WindowRecognitionEditorTest' '-Dmacro.image.click.preview=true' '-Dmacro.image.click.previewDirectory=target/failure-image-click-20261027-165541' test`，**62 项，失败 0、错误 0、跳过 0，退出码 0**，17:04:53 完成，日志 `target/failure-image-click-20261027-165541/directed-new.log`。
+
+完整 `mvn test`：**273 项，失败 0、错误 0、跳过 0，退出码 0**，17:07:35 完成，日志 `full-final.log`。`mvn compile` 退出 0，17:09:52 完成，日志 `compile-final.log`；`git diff --check` 通过。图像标注收窄单独定向 31 项的日志保留在 `target/timeline-image-labels-20261027-165137/`，此后失败点击首轮定向 39 项也通过，均不替代最终 62 项/273 项。
+
+已核对任务目录 `click-editor-150.png` 与 `connector-150.png`：前者显示启用的失败 X/Y，后者普通动作连线只有 50ms、图像相关仍有成功/执行/未找到条件；由合成节点离屏绘制，未显示窗口、激活目标或发送真实输入。真实 Windows 11、150% DPI 的固定屏幕坐标、跨屏、窗口移动、暂停/停止及目标应用响应仍需人工验收。源码未打包、提交或推送，版本仍为 1.2.0，既有诊断及个人数据保留。
+
+## 2026-10-27：1.2.0 连线行为与延迟显示
+
+普通顺序连接器上方补充“执行”，进入图像节点的“检查”占位改为真实入向分支等待，当前工厂生成的分支为 `0 ms`。重试间隔仍显示在图像下方回路；图像默认分支保留成功/失败条件。旧流程非零等待或两个结果不同等待时也按实际值显示，悬浮提示区分条件。没有新增图像进入延迟配置、修改播放器或改写 MR。
+
+`mvn '-Dtest=TimelineNodeDragTest,TimelineJumpLayoutTest,TimelineNumberingTest,TimelineTemplateWarningTest,StandbyHeadTimelineTest,TimelinePlaybackProgressTest,ImageClickEditorTest' test`：**39 项，失败 0、错误 0、跳过 0，退出码 0**，16:41:14 完成，日志 `target/timeline-connector-20261027-163932/directed.log`；该命令包含实际编译，`git diff --check` 通过。未新增只检查文案的测试，复用原有拖动、连线路径/端口、编号和编辑回归。
+
+用任务目录内 `ConnectorPreview.java` 构造与反馈截图对应的 5 个合成节点，不显示窗口或发送输入，离屏绘制 `connector-150.png` 并实际核对。连接器文本依次为“识别成功 / 50 ms”“执行 / 50 ms”“执行 / 0 ms”“未找到 / 20 ms”，两处重试回路均保持 100ms；临时源码、输出图及 `preview.log` 均保留。真实桌面效果仍需人工确认，未重打包、提交或推送。
+
+## 2026-10-27：1.2.0 时间线拖动排序
+
+普通动作和图像卡片支持左键拖动，保留按下偏移的半透明虚化影像、插入标记与占位预览，边缘自动横向滚动。预览只改变组件排列，不修改流程；松手后按最终位置移动原节点对象，保留 ID、动作延迟、指定跳转目标、头部等待和 END 身份，重接普通默认后继，刷新编号和连线。预览的前跳/回跳文字也随临时位置更新。MR 格式不变，主窗口和已打开的节点编辑器沿用已有流程变更回调同步。
+
+新增 `TimelineNodeDragTest` **15 项**，使用组件事件、合成流程和工作区临时文件，覆盖：
+
+- 第 5 项移至第 7 项后，成功/失败及多个图像来源的引用仍指向原目标，显示编号及箭头端点一起更新；移动图像源节点保留出向跳转、重试、点击参数及默认后继。
+- 首尾移动、动作延迟、头部待机、END、MR 保存重载；实际播放器配合计数 Robot 验证只执行原跳转目标，跳过原位置现在的节点，不发送真实键鼠输入。
+- 预览不写模型、释放仅提交一次、小范围移动仍是选择、双击保留；子标签起拖、坐标编辑不触发拖动，真实组件事件分发在卡片重新排列后仍可完成释放。
+- Esc、轨道外释放、窗口失去激活、播放锁定、外部权限变化、重建/换宏、移除均取消；监听移除、定时器停止、影像释放；非法位置和原位不通知修改。
+- 头部固定、重复移动不抖动、左右边缘滚到视口之外及首尾，150% 离屏拖动前/中/后绘制与预览连线方向。
+
+最终定向命令：`mvn '-Dtest=TimelineNodeDragTest,TimelineNumberingTest,TimelineJumpLayoutTest,TimelineTemplateWarningTest,ImageJumpEditorTest,ImageJumpPlaybackTest,ImageClickPlaybackTest,MacroStorageSaveValidationTest' test`，**51 项，失败 0、错误 0、跳过 0，退出码 0**，16:30:06 完成；日志 `target/timeline-drag-20261027-161406/directed-final.log`。之前包含 `LegacyRegressionTest` 的首轮定向 **80 项**也通过，日志 `directed-first.log`；当时新增拖动检查为 12 项，此后补到 15 项，不混算总数。
+
+最终完整 `mvn test`：**264 项，失败 0、错误 0、跳过 0，退出码 0**，16:32:49 完成，日志 `target/timeline-drag-20261027-161406/full-verified.log`；包含预览方向文字的最后修正。此前 16:28:28 的完整 264 项也通过，日志 `full-final.log`。本轮未修改单实例模块，不将通过结果视为修复此前偶发 Windows 1400。
+
+`mvn compile` **退出码 0**，16:32:48 完成，日志 `compile-final.log`。`git diff --check` 通过。开发中的命令参数和测试夹具修正日志按原路径保留，没有清理旧诊断产物。
+
+已查看 `target/test-sandboxes/timeline-drag-*/timeline-before-150.png`、`timeline-drag-150.png` 与 `timeline-after-150.png` 的离屏绘制结果，最终预览方向修正后的拖动图也已核对。新增测试不显示或激活窗口，不使用真实桌面截图、真实键鼠或个人 MR。真实 Windows 11、150% DPI 的鼠标拖动手感、跨显示器/缩放、滚动及取消仍需人工确认。未重新打包、提交或推送，版本仍为 1.2.0。
+
+## 2026-10-27：1.2.0 窗口内识别
+
+图像动作新增 `ImageSearchScope.DESKTOP/WINDOW` 与独立窗口描述，默认/缺省/null 仍为桌面。窗口模式持久化进程名、标题和窗口类，防御性复制，保存与跨目录另存为保留；不写入 HWND、PID 或坐标。无效配置在保存、加载及播放预检拒绝，预检不定位窗口或截图。
+
+实际执行到节点才唯一定位窗口，先匹配进程和窗口类，再优先唯一标题；标题变化时只接受唯一候选，不使用最大窗口猜测。同一次播放绑定运行时身份，关闭后不自动改绑其他窗口，开始下一次播放重新定位。窗口需在前台且未最小化，识别不激活、不恢复目标；不可用、无法唯一定位或捕获/匹配前后发现窗口位置/大小变化时按运行错误处理，不回退桌面，也不走普通未找到分支。有效窗口内没有目标图像时仍执行原失败行为。
+
+窗口模式的局扫、扩大局扫和竞速完整搜索均限制在当前客户区，窗口移动/调整大小时重读范围并使旧位置提示按范围变化失效；桌面录制提示不混入窗口模式。跨屏按每屏 DPI 分别捕获可见部分，不拼接屏幕接缝。Robot 对原点和尺寸分别舍入，捕获前进一步向内约束，避免局扫起点变化造成越界；结果换算的逻辑点击框也限制在截图内，修正右/下边缘可能多出一个像素的问题。原竞速取消与后台收尾继续保留，不增加跨识别等待或修改 delay。未运行新的性能基准，不据此承诺提速比例。
+
+编辑器增加识别范围及窗口按钮，保存/加载/取消和未保存预览隔离；图像编辑器高度由 500 调整为 540。预览展示范围并按同一配置识别，窗口模式保持本程序隐藏直至匹配完成，避免恢复界面抢走前台；桌面预览保持原恢复时机。预览不发送输入。使用规则见 [窗口内识别](window-recognition.md)。
+
+新增 4 类共 **23 项**：
+
+- `WindowRecognitionTest` **14 项**：真实 OpenCV 配合假窗口/合成画面，覆盖窗口外同图排除、窗口内未命中不扫桌面、窗口移动/调整大小、局扫与竞速边界、近整窗与缩放模板、标题优先/变化/多候选、同次播放绑定与再次播放重绑、窗口不可用、采集中/匹配中移动拒绝、预检与取消不扫描、模式切换缓存隔离、负坐标跨屏不同 DPI、1,200 组舍入范围，以及靠边和极小像素结果的逻辑点击框不越界。
+- `WindowRecognitionStorageTest` **4 项**：窗口描述往返、字段集合无运行时标识、旧/null 范围默认桌面、独立副本、另存为保全、非法配置拒绝及既有文件保护。
+- `WindowRecognitionEditorTest` **3 项**：默认桌面、范围切换、未选窗口拒绝、保存回显、未保存预览与源节点隔离、长标题和 150% 离屏布局，兼容缩放及随机点击参数。
+- `WindowRecognitionPlaybackTest` **2 项**：无效范围在任何输入前拒绝、每次播放重置一次窗口绑定、窗口错误不点击/不执行下一动作并恢复 IDLE。使用计数 Robot，不发送实际输入。
+
+最终定向命令：`mvn '-Dtest=WindowRecognitionTest,WindowRecognitionStorageTest,WindowRecognitionEditorTest,WindowRecognitionPlaybackTest,AdaptiveImageSearchTest,ScreenRegionCaptureTest,ScaleMatchingTest,ScaleMatchingParallelTest,ScreenSearchRaceTest,RecognitionSessionTest,ScaleMatchingStorageTest,ImageClickPlaybackTest,ScaleMatchingEditorTest,ImageClickEditorTest,CaptureWindowDialogTest' test`，**84 项，失败 0、错误 0、跳过 0，退出码 0**，15:48:07 完成；日志 `target/window-recognition-20261027-151948/directed-bounds-final.log`。
+
+最终完整 `mvn test`：**249 项，失败 0、错误 0、跳过 0，退出码 0**，15:49:33 完成，日志 `full-bounds-final.log`。前一轮完整 248 项曾在既有 `WindowsSingleInstanceTest.crashedProcessLeavesNoStaleLock` 出现 Windows 1400，日志 `full-final.log`；未修改该模块，单独复测 5 项通过，随后 248 项完整复测也通过，日志分别为 `single-instance-recheck.log` 和 `full-verified.log`。最后补充 DPI 点击边界检查后再验证 249 项；不将复测通过视为已修复该偶发问题。
+
+已核对 `target/test-sandboxes/window-editor-*/window-editor-150.png` 和任务目录 `window-preview-150.png`；后者由独立离屏绘制程序生成，只有合成模板和假窗口描述，不截图真实桌面或枚举个人窗口。所有测试临时文件位于新建的 `target/test-sandboxes/` 目录，当前源码均未提交、推送或重新打包，版本仍为 1.2.0。
+
+仍需 Windows 11、150% DPI 实际确认窗口定位/前台要求、置顶遮挡、窗口移动/缩放、跨屏、贴边模板、预览隐藏/恢复、点击位置及停止恢复。非整数 DPI 向内取整可能少量裁边，贴边或整窗模板建议留边；后台窗口识别、跨屏模板拼接和相对窗口坐标的命中提示推移未实现。
+
+## 2026-10-27：1.2.0 指定窗口截图
+
+采集页新增独立窗口列表、当前目标提示与“使用屏幕”切换。选择不激活目标，点击截图才隐藏本程序可见窗口、尝试恢复/前置所选目标，再进入冻结框选；客户区高亮，窗口外不能开始，拖出边界自动截断，不限制真实鼠标。框选与裁剪继续复用原流程，成功、取消、失败均恢复本程序，失效或无法前置目标不回退到其他窗口，截图前后客户区变化拒绝交付。本轮不改 MR 格式、录制目标、F10、播放搜索或 delay，也没有新增跨识别等待。
+
+Win32 查询临时切到 Per-Monitor V2 线程 DPI 上下文，再原样恢复；物理客户区按目标屏幕和实际 Robot 高分辨率像素换算并向内取整，处理非整数 DPI 边缘舍入。沿用单屏冻结框选，跨屏窗口只选可见客户区面积最大的屏幕部分，界面明确提示，未实现跨屏拼接或后台窗口渲染。使用说明见 [指定窗口截图](window-capture.md)。
+
+新增 6 类共 **18 项**：
+
+- `WindowCaptureGeometryTest` 3 项：150% 缩放、负坐标、窗口部分在屏幕外、无交集、非法尺寸和 1,000 组合成范围向内取整边界。
+- `WindowSelectionOverlayTest` 3 项：窗口外不能开始、越界拖动截断、已有选框保留、双向拖动、小选区拒绝、150% 合成像素裁剪及取消只回调一次。
+- `CaptureWindowServiceTest` 3 项：真实 Win32 查询不显示的自建窗口客户区，成功/失败后线程 DPI 上下文恢复，真实显示器原点/物理尺寸，非法目标在激活前被拒绝；不枚举或激活个人窗口。
+- `WindowCaptureControllerTest` 5 项：隐藏所有可见应用窗口后才请求前置、激活失败恢复、目标屏幕/客户区限制传递、捕获后窗口移动拒绝、目标不可用不截图、取消后晚返回不显示框选层。使用假目标与合成捕获源；原生目标激活被替身接管。
+- `CaptureWindowDialogTest` 3 项：后台加载、不自动激活或接受选择、明确确认、刷新失败清除旧候选及恢复、关闭后丢弃晚返回列表和 150% 离屏布局。
+- `WindowCapturePageTest` 1 项：独立 JVM 下验证默认屏幕、指定目标回调、切回屏幕、与 OCR/预览并存、目标不进入个人配置及 150% 采集页布局。AppConfig 只写该轮新建隔离应用目录，不访问项目个人配置。
+
+定向命令：`mvn '-Dtest=WindowCaptureGeometryTest,WindowSelectionOverlayTest,CaptureWindowServiceTest,WindowCaptureControllerTest,CaptureWindowDialogTest,WindowCapturePageTest,ScreenCaptureControllerTest' test`，包括原有截图控制器 6 项，最终 **24 项，失败 0、错误 0、跳过 0，退出码 0**，01:07:10 完成；日志 `target/window-capture-20261027-010000/directed-verified.log`。
+
+完整 `mvn test`：**226 项，失败 0、错误 0、跳过 0，退出码 0**，01:10:11 完成，日志同目录 `full-final.log`。未出现既有单实例的 Windows 1400 偶发错误，不视为该问题已被修复。开发过程中的 Win32 接口适配、64 位 DPI 伪句柄常量和测试捕获源比例舍入问题均已修正；中间编译/测试日志原样保留，未覆盖最终结果或清理旧诊断产物。
+
+最终 `mvn compile` 退出码 0，01:12:03 完成，日志 `compile-final.log`；`git diff --check` 退出码 0。
+
+已人工查看离屏预览 `target/test-sandboxes/Probe-*/classes/capture-page-150.png` 与 `target/test-sandboxes/window-picker-*/picker-150.png`；对应源码用合成图片和假窗口标题绘制，没有个人窗口截图。仍需 Windows 11、150% DPI 实际确认列表、最小化恢复/前置、框选内容边界、Esc/右键、目标关闭/移动、置顶遮挡、不同 DPI 跨屏和恢复原界面。原生截图内部仍不能立即中断，但取消后的过时回调不被接收。
+
+版本保持 1.2.0，未重新打包、提交、推送或创建标签；所有既有数据与输出目录保留。
+
+## 2026-10-26：1.2.0 离线 OCR 与扫描竞速
+
+OCR 只提取当前图片文字，通过已有 JNA 直接调用 Windows x64 的 Tesseract 5.3.4 / Leptonica 1.84.1。五种语言模型与本机库随程序提供，运行时离线；简繁中文、英文、日文和韩文均做了真实原生提取检查。默认选简体中文、英文，支持单行模式、后台提取、协作取消、可编辑结果、复制和 UTF-8 TXT 保存。打开弹窗不自动提取，关闭和取消丢弃过时结果；原生退出前不重复开始，全程序最多一个 OCR 引擎。资源 SHA-256 校验后在程序目录展开，隔离测试与本轮下载均位于 D 盘；损坏缓存保留且不覆盖。使用入口与许可见 [离线 OCR](offline-ocr.md)。
+
+播放搜索改为先局扫，失败后竞速扩大局扫、全扫，先命中的阶段返回；先未命中仍等待另一方，两边未命中保留全扫候选。较慢原生任务协作停止并后台释放，不阻塞获胜结果返回。全程序最多两个范围竞速任务，前次未收尾时回退串行，避免积压；扩大任务比例串行，全扫保持原有大图双比例能力。一次识别仅启动一份进程内存采样，后台原生任务持有引用，最后退出后才关闭。报告数值为生成报告时的采样快照，仍不能当成精确原生分配或最终收尾峰值。
+
+新增 26 项：`OcrServiceTest` 8 项（真实五种语言提取、组合语言、空白/透明图、原图保全、输入校验、取消/中断、引擎忙碌及释放、原生进度回调取消后可恢复）；`OcrResourcesTest` 4 项（清单校验、缓存复用与损坏保全、默认目录、UTF-8 保存）；`OcrTextDialogTest` 5 项（无自动执行、后台线程、结果编辑、取消/关闭后不回写、等待真实退出、文件面板保存）；`ScreenSearchRaceTest` 6 项（两种获胜顺序、先未命中、失败处理、配额上限、停止与中断、后台资源收尾）；`RecognitionSessionTest` 3 项（多阶段单采样、局扫命中和引用幂等释放）。既有 14 项 `AdaptiveImageSearchTest` 保留缓存、区域、跨屏/DPI、停止及不点击旧坐标的断言，合成捕获源改为线程安全，并允许竞争任务因取消而少截取一次。
+
+实际结果：
+
+- 完整 `mvn test`：**208 项，失败 0、错误 0、跳过 0，退出码 0**，22:04:52 完成，日志 `target/ocr-race-20261026-211718/full-final.log`。
+- 最终定向 `mvn '-Dtest=OcrServiceTest,OcrResourcesTest,OcrTextDialogTest,ScreenSearchRaceTest,RecognitionSessionTest,AdaptiveImageSearchTest,ScaleMatchingTest,ScaleMatchingParallelTest,ScreenRegionCaptureTest,ImageClickPlaybackTest,ScreenCaptureControllerTest' test`：**74 项，失败 0、错误 0、跳过 0，退出码 0**，22:13:37 完成，日志同目录 `directed-final.log`。完整回归后的微调为缩进、缓存错误提示及清除上次错误悬浮提示，最终定向已覆盖。
+- `mvn compile`：退出码 0，22:13:39 完成，日志 `compile-final.log`。
+- 扩充后的 `PackagingSmokeTest` 在当前完整 JDK 17 与当前编译类/依赖上 **9 项通过**，包括实际加载五种 OCR 语言并提取合成文字；隔离缓存/日志位于 `smoke-current-jdk/`。这不是发行包自带精简 Java 的验收，本轮未重新打包。
+
+初次原生联调的中文路径编码失败及随后新版本 DLL 的内存访问错误均保留日志；最终改用系统 Windows 代码页传递模型路径和上述已验证的兼容组件组合，原生测试通过。未宣称修复上游 DLL 或既有单实例偶发 Windows 1400 问题。诊断文件 `ocr-initial.log`、`ocr-path-fix.log`、`ocr-compatible-runtime.log` 和 `incompatible-native/` 保留，不清理或混入正式资源。
+
+已核对 150% 离屏 OCR 弹窗：语言行、可编辑结果、状态和四按钮可见；预览在 `target/test-sandboxes/ocr-ui-*/ocr-dialog-150.png`。测试不截真实桌面、不发送输入、不访问真实剪贴板或文件面板，仍需 Windows 11、150% DPI 人工验收真实截图文字、复杂字体、剪贴板、保存、播放竞速、多目标选择、停止恢复及连续播放的资源占用。
+
+### 新旧策略重复测量
+
+保留本轮修改前的编译类作为串行对照，同一驱动分别运行两版，每版 **5 个独立 JVM**；每轮每场景预热 5 次再计时 20 次，每策略/场景 **100 个样本**，共 **1,400 个计时样本**。实现顺序逐轮交替、场景顺序轮换，不删异常值、不强制 GC。Java 17.0.14、16 个逻辑处理器、256 MiB 初始/1 GiB 最大堆，1280×720 合成画面，60×48 模板（缩放目标为 72×58），阈值 0.98。
+
+下表为响应耗时均值 ± 样本标准差，单位 ms。计时结束后另等后台资源收尾，避免更换画面影响前一次任务；因此是隔离请求的响应测量，不是连续播放吞吐。包含正式截图复制和识别，不包含真实桌面捕获、首次原生加载、点击与动作等待。
+
+| 场景 | 原串行平均 ± SD | 当前竞速平均 ± SD | 竞速 P95 |
+|---|---:|---:|---:|
+| 原尺寸局扫命中 | 1.63 ± 0.80 | 1.72 ± 0.97 | 3.39 |
+| 缩放局扫命中 | 8.65 ± 3.12 | 8.49 ± 2.69 | 13.79 |
+| 扩大局扫命中 | 5.73 ± 1.46 | 5.85 ± 1.86 | 9.60 |
+| 原尺寸远距离，全扫命中 | 53.56 ± 3.35 | 55.85 ± 18.45 | 110.87 |
+| 原尺寸未出现 | 59.40 ± 17.39 | 59.42 ± 20.90 | 105.30 |
+| 缩放远距离，全扫命中 | 440.16 ± 141.18 | 420.59 ± 142.60 | 704.57 |
+| 缩放未出现 | 366.95 ± 110.57 | 343.35 ± 100.73 | 617.92 |
+
+没有稳定的全面加速证据。竞速第 4 轮和串行第 5 轮有明显整轮耗时上升，原因未确定，全部保留；不能仅用均值宣称缩放回退改善已可靠复现。扩大局扫命中后，竞速后台平均还需 **6.29 ms** 收尾，也会增加捕获和瞬时计算。竞速解决的是同时启动两条回退路径、先命中返回，不保证所有场景更快或捕捉到短暂状态。
+
+完整报告、全部原始 CSV、逐轮均值、响应及收尾耗时、捕获次数/像素位于 `target/ocr-race-20261026-211718/benchmark-measured/`；驱动与汇总脚本在同级 `benchmark/`。首轮驱动曾因相对模板路径重复拼接失败，原日志保留，修正为绝对路径后另建 `benchmark-measured/` 完成正式测量，不混合失败数据。OCR 资源体积测量 ZIP 保留在任务目录；它们不是应用发行包。版本仍为 1.2.0，未提交或推送。
+
+## 2026-10-26：1.2.0 局扫、扩大局扫与全扫
+
+正式播放器在执行到对应 IMAGE_CHECK 节点时，按内存提示依次局扫、扩大局扫、全扫。录制确认的选区经截图控制器传递屏幕逻辑矩形，PNG 保存且录制节点提交成功后登记初始提示；加载 MR 和开始播放时的资源预检不截屏。没有提示的节点首次执行全扫，命中后按实际逻辑矩形更新；新录制或成功加载 MR 时清空。位置不进入 ImageCheckConfig 或 MR，两个元数据缓存各最多 128 项，不持有屏幕像素或原生矩阵。
+
+局扫每侧边距为 max(32, ceil(对应边长 × 0.25))，扩大阶段为 max(96, ceil(对应边长 × 0.75))，均从原命中框计算。捕获源只接收各显示器与搜索区域的交集，并保留高分辨率图像和逻辑坐标映射。每阶段重新捕获，扩大后完整检查旧区域和新增区域；空范围、相同范围或已经等于全屏的局部阶段会跳过，避免重复工作。阶段内仍先原尺寸、后可选缩放；首个命中阶段取最高相似度，测试窗口保持全屏多结果且不读写播放位置缓存。
+
+节点 ID、规范化模板路径、文件修改时间/大小、阈值及缩放开关组成位置键，显示器身份、布局与 DPI 变化也使提示失效。未命中返回无坐标，不把旧位置当成当前命中；旧提示仍可用于下一轮重试。每次识别仍检查外部模板，文件移走时报错。阶段之间及每次捕获前后检查停止，中断保留标志；单次截图和 OpenCV 原生调用内部仍不能强制中断。诊断增加 LOCAL/EXPANDED/GLOBAL、搜索区域及包含采集和各阶段的总耗时，显式开启诊断截图时各阶段分开保存。
+
+新增 `AdaptiveImageSearchTest` 14 项、`ScreenRegionCaptureTest` 4 项，并在 `ScreenCaptureControllerTest` 增加 1 项。覆盖首次全扫、录制提示、逐节点独立缓存、小幅移动、扩大后命中、远距离/跨屏回退、刷新旧区域、未命中无旧坐标、参数/模板/布局/DPI 失效、缓存容量、整屏覆盖去重、停止/中断、加载/预检不扫描、MR 内容不受缓存影响、文件移走、150% DPI 和负坐标，以及关闭框选层前传出逻辑选区。使用真实 OpenCV 和合成捕获源；播放器测试替换输入 Robot，选区测试不显示窗口，不采集真实桌面或发送输入。
+
+- 定向：`mvn '-Dtest=AdaptiveImageSearchTest,ScreenRegionCaptureTest,ScreenCaptureControllerTest,ScreenRecognitionServiceTest,ScaleMatchingTest,ScaleMatchingParallelTest,ImageClickPlaybackTest' test`，**52 项，失败 0、错误 0、跳过 0，退出码 0**，19:59:58 完成，日志 `directed-final.log`。
+- 完整：`mvn '-Dsurefire.timeout=180' test`，**182 项，失败 0、错误 0、跳过 0，退出码 0**，20:01:47 完成，日志 `full-test.log`。
+- 编译：`mvn compile`，退出码 0，20:01:35 完成，日志 `compile.log`；源码注释核对后的最终编译也退出 0，20:08:50 完成，日志 `compile-final.log`。中途测试夹具构造参数及未布局画布的断言问题已修正，原始日志 `directed-initial.log`、`directed-second.log` 保留；`directed-third.log` 为补齐最终两个测试前的 50 项通过记录。
+
+同机合成测量使用 1280×720 图像、60×48 模板、阈值 0.98，每组预热 3 次、测 7 次。对照路径每次清空位置缓存后强制全扫；新路径在计时前设置相应位置提示，两者均经过正式匹配器、文件元数据检查、截图复制和结果转换。捕获源只从合成图像取区域，**不包含真实桌面截图开销**，不作为实际应用延迟保证。中位耗时如下：
+
+| 场景 | 强制全扫 | 位置优先 |
+|---|---|---|
+| 原尺寸局扫命中 | 56.12 ms | 2.20 ms |
+| 1.2 倍目标局扫命中，开启缩放 | 337.56 ms | 7.36 ms |
+| 偏移后扩大局扫命中 | 49.99 ms | 5.11 ms |
+| 远距离移动，最终全扫命中 | 50.92 ms | 55.35 ms |
+| 目标未出现，最终全扫未命中 | 50.92 ms | 55.41 ms |
+
+原尺寸局扫采集 13,888 像素，对照全扫 921,600；扩大后命中累计采集 74,368 像素；回退全扫累计 995,968 像素、共三次捕获，失败阶段有额外开销。程序、最终测量及全部本轮日志位于 `target/local-search-20261026-195506/`，分别为 `LocalSearchBenchmark.java`、`benchmark-final.log`；初次测量夹具的相对路径错误记录在 `benchmark.log`，不用于性能结论。
+
+### 同日重复测量：5 个独立进程、每项 100 个样本
+
+用户要求增加次数并计算平均值后，另外启动 5 个独立 JVM 依次测量。每个进程、每种场景预热 5 对、计时 20 对，每对分别执行强制全扫和位置优先，AB/BA 各 10 对；5 轮轮换场景顺序。保持相同合成输入（1280×720、60×48 模板、阈值 0.98、固定随机种子 581），缩放目标 72×58。每种场景、每种策略合计 **100 个有效样本**，共 **1000 个计时样本**，另有 250 次预热调用。Java 17.0.14、JVM 可见处理器 16 个；各轮环境记录于日志。
+
+全部调用逐次检查命中状态、位置、捕获次数与像素数；五轮均通过。均值直接由原始纳秒计算，未剔除慢样本或强制 GC；标准差为样本标准差（n−1），P95 取升序第 ceil(0.95n) 项。下表单位 ms，数值四舍五入至两位；全部中位数、最小/最大值及各轮均值另存于完整报告。
+
+| 场景 | 强制全扫平均 ± SD | 位置优先平均 ± SD | 位置优先 P95 |
+|---|---|---|---|
+| 原尺寸局扫命中 | 49.14 ± 3.33 | 1.58 ± 0.37 | 2.39 |
+| 缩放目标局扫命中 | 329.99 ± 8.64 | 7.01 ± 0.52 | 8.10 |
+| 扩大局扫命中 | 47.63 ± 1.00 | 4.78 ± 0.51 | 5.54 |
+| 远距离移动，全扫命中 | 48.11 ± 0.95 | 52.59 ± 1.15 | 54.51 |
+| 目标未出现，全扫未命中 | 48.03 ± 1.00 | 52.46 ± 1.39 | 54.26 |
+
+5 轮原尺寸局扫的各轮均值为 1.298～2.070 ms，全扫对照为 47.500～52.759 ms；扩大命中为 4.187～5.306 ms。远距离回退、目标未出现分别平均多 4.480/4.423 ms，约增加 9.3%/9.2%，证实局扫失败后的额外开销。该结果和此前 7 样本中位数是不同轮次，不混合计算。
+
+本轮依旧使用合成捕获源，包含正式截图复制和识别路径，位置准备在计时前完成；**不包含真实桌面捕获、首次引擎加载、点击或动作等待**，不能据此宣称真实 Windows 11 / 150% DPI 的端到端延迟。仅新增测量驱动和文档，5 个识别相关生产源码文件的 SHA-256 前后相同，未重跑 Maven 功能回归或重新打包。
+
+全部文件位于 `target/local-search-repeat-20261026-201407/`：`report.md` 为完整报告；`run-01.csv`～`run-05.csv` 保留全部原始样本和顺序，`run-01.log`～`run-05.log` 保留环境、校验与 GC 数据；`summary.csv`、`summary.json`、`per-run-summary.csv`、`summary.log` 为汇总；`RepeatedLocalSearchBenchmark.java` 和 `Summarize-Benchmark.ps1` 为驱动和统计脚本。此前测量与测试产物均保留。
+
+版本仍为 1.2.0；未提交、推送或重新生成发行包。真实 Windows 11、150% DPI 的录制坐标、目标移动/跨屏、局部截图耗时、缩放、多目标选择以及暂停/停止仍需人工验收。
+
+## 2026-10-26：1.2.0 识别后点击行为
+
+成功行为新增 CLICK_EXECUTE（点击后执行）和 CLICK_TERMINATE（点击后终止），左键单击本次最佳命中的逻辑坐标区域后，分别继续后继或结束整个任务（包括无限循环）。点击方式 CENTER/RANDOM 保存到 MR，缺省或 null 为中心点击，另存为转换路径时保留。行为列表统一稳定排序，JUMP 无论在枚举何处声明都位于最后；失败没有可靠的命中区域，菜单不提供点击行为，存储及播放在任何输入前拒绝非法失败点击配置。
+
+点击前检查暂停/停止，移动后再次检查，按下后先释放再响应暂停/停止；异常沿用最终输入释放。使用当前结果而不是上次匹配区域，支持负坐标及缩放后的实际命中范围。点击后完整保留后续动作间隔；测试识别窗口不发送点击。流程重建、必需出口校验、默认连线、终止标记和跳转闭环检查均保留相应执行/终止语义。
+
+新增 4 类共 21 项：`ImageClickModeTest` 4 项检查中心/随机坐标、负坐标、1×1 范围、无效范围和菜单排序；`ImageClickPlaybackTest` 11 项用计数 Robot 检查完整单击顺序、原延迟、无限循环终止、随机范围、不点击旧结果、重试至命中才点击、匹配后及移动后停止、按下后停止仍释放、暂停后继续、按下/释放失败清理、非法配置/缺少出口预检及无效命中范围；`ImageClickStorageTest` 3 项检查行为/点击方式往返、旧/null 字段、另存为保全、非法配置加载/保存拒绝及原文件保护；`ImageClickEditorTest` 3 项检查跳转固定最后、成功点击启用选点、失败菜单排除点击、独立跳转状态、保存回显/取消保全、控件布局和主链/终止语义。测试只写新建 `target/test-sandboxes/click-*` 合成 MR/图片，不发送真实输入、截图或显示窗口。
+
+既有 `ImageJumpEditorTest` 的失败组合及 `TimelineEditingTest` 的失败重试组合改按合法失败选项枚举，成功组合仍包含新行为，原断言全部保留；旧九种识别分支行为检查未放宽。新增检查首轮 20 项通过，补充“失败重试后只点击一次”后，最终定向命令为：`mvn '-Dtest=ImageClickModeTest,ImageClickPlaybackTest,ImageClickStorageTest,ImageClickEditorTest,ImageJumpPlaybackTest,ImageJumpEditorTest,TimelineJumpLayoutTest,ScaleMatchingStorageTest,LegacyRegressionTest#imageCheckBehaviors+flowPreflightValidation+timelineHeadlessEditing' '-Dmacro.image.click.preview=true' '-Dmacro.image.click.previewDirectory=target/image-click-behaviors-20261026/preview-final' test`，**39 项，失败 0、错误 0、跳过 0，退出码 0**，16:47:46 完成。
+
+完整执行 `mvn '-Dsurefire.timeout=180' test`：**163 项，失败 0、错误 0、跳过 0，退出码 0**，16:49:49 完成；`mvn compile` 退出码 0，16:51:50 完成。日志为同目录 `full-test.log`、`compile.log`；`git diff --check` 退出码 0。本轮未出现测试失败。
+
+日志和预览位于 `target/image-click-behaviors-20261026/`：`existing-directed.log` 为既有 18 项，`new-tests-initial.log` 为新增首轮 20 项，`directed-final.log` 为最终 39 项；已核对 `preview-initial/click-editor-150.png` 的 150% 离屏布局，最终同场景预览另存 `preview-final/`。没有删除或覆盖旧日志/预览。Windows 11、150% DPI 的真实识别后单击位置、目标窗口响应、随机范围、F11/F12 和停止恢复仍待人工验收。版本保持 1.2.0，不执行 clean、不重打包、不提交或推送。
+
+## 2026-10-26：1.2.0 时间线模板质量提醒
+
+图像动作卡片右上角叠加绘制黄色感叹号三角，保持左上角编号、158×176 卡片尺寸、内容及连接器布局不变。仅悬浮图标区域展示深色提示，提示给出风险原因和截取建议；选择、双击编辑、右键菜单及播放只读浏览仍沿用原事件。不新增录制、保存或播放限制，缺失模板的播放前校验仍由原播放器执行，MR 不保存提示状态。
+
+`TemplateQualityAnalyzer` 只分析所引用的图片，不截图或执行匹配。启发式检查包括：任一边小于 12 像素、参与匹配的像素不足 256 个、颜色方差低、明显边缘少，以及 2～16 像素周期的明显重复纹理。透明度规则与匹配器一致：存在 alpha≥220 的像素时只统计这些像素，否则使用 alpha≥1 的像素；全透明单独提示。重复检测使用有限探针，不保证检测出所有重复，也不能判断清晰模板在真实屏幕中是否唯一。提示阈值不作为识别阈值或禁止条件。
+
+模板读取和分析由 SwingWorker 在后台执行，按当前 MR 目录解析相对路径；只缓存最多 128 个路径及文件修改时间、大小和文本结果，不持有解码图片或原生 Mat。载入、编辑、重建或重新显示时间线时检查文件元数据，模板更换后更新或移除警告；旧任务取消及代次保护防止迟到结果更新新卡片。文件不存在、路径无效、无法解码时显示读取问题；不持续监控磁盘文件。
+
+新增 `TemplateQualityAnalyzerTest` 5 项，覆盖小图、纯色、平滑纹理、周期纹理、正常纹理、不透明/半透明/全透明、稀疏有效像素、中断及原图片保全。新增 `TimelineTemplateWarningTest` 3 项，覆盖实际黄色绘制、仅图标悬浮提示、编号与全部子组件几何保全、双击编辑和只读浏览、相对路径、同路径图片更新、同 ID 节点切换的旧任务保护、缺失/损坏模板仍可保存、普通动作无质量图标。测试只读写新建的 `target/test-sandboxes/template-warning-*` 合成图片与 MR，不显示窗口、不启动真实录制或发送输入。
+
+最终定向命令：`mvn '-Dtest=TemplateQualityAnalyzerTest,TimelineTemplateWarningTest,TimelineNumberingTest,TimelinePlaybackProgressTest,TimelineJumpLayoutTest,ScaleMatchingEditorTest,LegacyRegressionTest#templatePathResolution+templatePathPlaybackAndEditor' '-Dmacro.template.warning.preview=true' '-Dmacro.template.warning.previewDirectory=target/template-quality-warning-20261026/final-preview' test`：**25 项，失败 0、错误 0、跳过 0，退出码 0**，16:06:28 完成，日志 `target/template-quality-warning-20261026/directed-final.log`。中间 21/24 项的通过记录也保留，最终 25 项包含真实未显示主窗口、编辑器和路径保存的既有集成检查。
+
+完整执行 `mvn '-Dsurefire.timeout=180' test`：**142 项，失败 0、错误 0、跳过 0，退出码 0**，16:08:48 完成；`mvn compile` 退出码 0，16:10:12 完成。日志为同目录 `full-test.log`、`compile.log`；`git diff --check` 退出码 0。本轮未出现测试失败。
+
+150% 离屏预览位于上述 `final-preview/` 的 `warning-card-150.png` 和 `warning-tooltip-150.png`，已核对右上角三角、编号和深色悬浮提示的布局；这些不是真实桌面截图，仍需 Windows 11、150% DPI 人工检查实际鼠标悬浮、提示出现/消失、连续录制及播放界面交互。不执行 clean，不重打包，不提交或推送，版本保持 1.2.0。
+
+## 2026-10-26：1.2.0 缩放匹配性能优化
+
+本轮在用户明确恢复性能工作后实施。原尺寸优先、候选比例、细查选择、透明掩码、满分像素复核、跨比例去重及多目标结果保留规则均沿用。结果扫描跳过既不命中也不能改善最佳候选的位置，避免重复计算坐标和相似度；源图至少 65,536 像素且 JVM 可用处理器多于一个时，缩放搜索每批最多执行两次原生匹配。两个任务只读共享屏幕 Mat，各自持有模板及误差矩阵，候选收集和停止回调仍在调用线程按原比例顺序执行；小图及单核环境保持串行。
+
+每批最多额外创建一个短生命周期工作线程；批次结束即等待并释放全部矩阵，取消、中断或一侧原生异常也执行收尾，中断标志保留。没有常驻线程池或原生 Mat 缓存。缩放模板仍按需生成、保留像素缓存上限仍为 32 MiB，识别报告增加两比例批次的保守内存估算。代价是同时保留两份原生误差/模板矩阵；单次原生调用仍不能强制中断，停止需等待当前批次退出，不再启动后续批次。
+
+新增 `ScaleMatchingParallelTest` 4 项：真实 OpenCV 对照串行和双比例批次的完整结果记录，包括普通/满分阈值、结果上限、排序、220/127 透明度和全透明模板；并检查取消、中断标志、两侧异常传播、工作线程退出及下一次识别恢复。既有细查和不同大小双目标夹具扩大到能进入并行路径，断言保留。全部使用内存合成图像，不截图或发送输入。
+
+- 定向：`mvn '-Dtest=ScaleMatchingTest,ScaleMatchingParallelTest,ScaleMatchingStorageTest,ScaleMatchingEditorTest,ScaleMatchingPlaybackTest,LegacyRegressionTest#openCvPerfectThreshold' test`，21 项，失败 0、错误 0、跳过 0，退出码 0，13:41:44 完成。
+- 完整：`mvn '-Dsurefire.timeout=180' test`，134 项，失败 0、错误 0、跳过 0，退出码 0，13:43:48 完成。
+- 编译：`mvn compile`，退出码 0，13:45:22 完成，日志 `compile.log`。
+
+修改前的实际工作区识别类先独立编译到 `baseline/` 保留，同一测量程序 `PerformanceBenchmark.java` 分别加载该基线及最终 Maven 编译类。条件为 1280×720 合成画面、60×48 模板、阈值 0.98，每组预热 3 次、测 7 次，先跑基线、再跑最终实现，未包含桌面截图耗时。最终同机复测中位数如下（日志 `baseline-repeat.log`、`final.log`）：
+
+| 场景 | 修改前 | 修改后 |
+| --- | --- | --- |
+| 原尺寸命中，关闭缩放 | 45 ms | 42 ms |
+| 原尺寸命中，开启缩放 | 45 ms | 42 ms |
+| 缩放目标，关闭缩放，未命中 | 45 ms | 43 ms |
+| 1.2 倍目标，开启缩放，命中 | 551 ms | 318 ms |
+| 0.8 和 1.25 倍双目标，均命中 | 558 ms | 331 ms |
+| 无命中，开启缩放 | 511 ms | 289 ms |
+
+以上三种完整缩放搜索中位耗时降低约 41%～43%，全部命中框和双目标数量一致。独立阶段测量（预热 4 次、取 20 次均值）中，原生匹配约 36.90/37.19 ms，Java 结果扫描约 4.51/1.42 ms；主要整体收益来自两比例并行，单次原生调用本身没有变快。首次基线、扫描优化中间版及首轮并行版的结果分别保留在 `baseline.log`、`scan.log`、`parallel.log`，不混用各轮数据计算最终提升。这些数值不能作为真实应用、高分辨率、多屏或低核数机器的耗时保证。
+
+本轮测试与测量文件集中保留在 `target/scale-performance-20261026/`，其中 `directed-initial.log` 是新增并行专项检查前的 17 项通过记录，`directed-parallel.log` 为最终 21 项，`full-test.log` 为完整回归。原有日志和诊断产物保留，不执行 clean、不重新打包、不提交或推送。Windows 11、150% DPI 真实桌面识别、可见界面和 F12 停止恢复仍需人工验收。
+
+## 2026-10-25：1.2.0 可选缩放匹配
+
+时间线图像动作编辑增加默认关闭的缩放开关，测试与播放共用配置，保存、加载和另存为保留，旧 MR 缺少字段时关闭。所有显示器原尺寸均未命中时，才进行约 66.7%～150% 的有限搜索：最多十个粗查和四个细查比例，按实际像素尺寸去重，屏幕矩阵复用，缩放模板缓存像素上限 32 MiB。沿用原评分、透明掩码和重叠框合并，不增加区域选择或 OCR。
+
+新增 `ScaleMatchingTest`、`ScaleMatchingStorageTest`、`ScaleMatchingEditorTest`、`ScaleMatchingPlaybackTest` 共 16 项，覆盖常见 DPI 比值及细查、模板缩小适配、跨比例去重、错误目标和透明模板、缓存复用及容量、阶段间取消、旧 MR、另存为、编辑和未保存的识别预览参数、合成 F12 及识别后保留完整动作延迟。`OpenCvPerfectThresholdTest` 仅同步内部评分方法新增的停止检查参数，原有满分及浮点边界断言保留。
+
+- 定向：`mvn '-Dsurefire.timeout=180' '-Dtest=ScaleMatchingTest,ScaleMatchingStorageTest,ScaleMatchingEditorTest,ScaleMatchingPlaybackTest,ScreenRecognitionServiceTest,ImageJumpEditorTest,LegacyRegressionTest#openCvPerfectThreshold' test`，24 项，失败 0、错误 0、跳过 0，退出码 0，22:53:41 完成。日志 `target/scale-matching-directed-verified.log`。
+- 完整：`mvn '-Dsurefire.timeout=180' test`，130 项，失败 0、错误 0、跳过 0，退出码 0，22:57:44 完成。日志 `target/scale-matching-full-final.log`。
+- 编译：`mvn compile`，退出码 0，22:58:27 完成。日志 `target/scale-matching-compile.log`。
+
+早期验证记录保留：新增测试曾因键盘动作参数顺序写错而编译失败、因按钮名称写错而出错；首次完整回归因旧满分测试的反射签名未同步失败，均已修正。第二次完整回归出现现有 `WindowsSingleInstanceTest.crashedProcessLeavesNoStaleLock` 的 Windows 1400 错误，未修改该模块，单独复测 5 项和最后完整回归均通过。单独日志 `target/scale-matching-single-instance-recheck.log`；该偶发问题不视为本轮已修复。
+
+性能测量只使用 1280×720 合成画面和 60×48 模板，每组预热一次后测三次：原尺寸命中时开关关闭/开启的中位耗时为 51/52 ms；目标为 1.2 倍时，关闭开关未命中、中位 50 ms，开启后命中、中位 624 ms（570～626 ms）。临时测量代码与结果在 `target/scale-matching-benchmark/`，没有新增常驻性能日志，不能当作真实应用或更高分辨率的耗时保证。
+
+未执行 `mvn clean`、未重打 ZIP 或安装包，现有 dist 产物早于本功能。仍需 Windows 11、150% DPI 人工检查控件显示、100%/125%/150% 目标缩放的命中和误匹配、预览与播放一致性、保存重开、F12 及停止后的窗口恢复。单轮原生 OpenCV 调用不能强制中断，停止在调用返回后的 Java 阶段及比例之间检查。
+
 ## 2026-10-25：1.1.0 提交前复核
 
 在维护者将 `ApplicationInfo.APP_VERSION` 设为 1.1.0 后，Maven 数字版本已同步。提交前重新核对累计源码、测试、删除项和新增文件；当前 README 同步版本依据及识别入口说明，更新日志按 `1.1.0` 归组。1.0.0 已提交的分支跳转、保存校验及侧键保护不重复计为本轮新增功能。

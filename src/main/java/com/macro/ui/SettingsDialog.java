@@ -392,7 +392,18 @@ public class SettingsDialog extends JDialog {
                     new String[]{"F11", "暂停 / 继续播放", "播放中可暂停，停稳后查看时间线"},
                     new String[]{"F12", "停止录制 / 播放", "录制、播放及其暂停状态下可用"});
             addGroup("时间线编辑",
+                    new String[]{"Ctrl + F", "查找节点", "按编号、动作、按键或图片名定位"},
+                    new String[]{"F3", "下一个查找结果", "查找栏中 Enter 也可用"},
+                    new String[]{"Shift + F3", "上一个查找结果", "查找栏中 Shift+Enter 也可用"},
+                    new String[]{"Esc", "关闭节点查找", "查找栏打开时保留原节点选择"},
+                    new String[]{"Ctrl + 单击", "多选节点", "再次点击可取消该节点选择"},
+                    new String[]{"Shift + 单击", "连续选择节点", "从最近一次点击位置起连续选择"},
+                    new String[]{"Ctrl + A", "全选时间线节点", "时间线内可用，文字输入框除外"},
+                    new String[]{"Esc", "取消时间线选择", "拖动时取消本次移动"},
                     new String[]{"Delete", "删除选中操作", "时间线获得焦点且允许编辑时可用"},
+                    new String[]{"Ctrl + Z", "撤销时间线修改", "空闲时间线内可用，文字输入框除外"},
+                    new String[]{"Ctrl + C", "复制选中节点", "时间线内可用，文字输入框除外"},
+                    new String[]{"Ctrl + V", "粘贴节点", "空闲时间线内可用，文字输入框除外"},
                     new String[]{"Enter", "保存当前输入", "编辑坐标或连线等待时间时可用"},
                     new String[]{"Esc", "取消当前输入", "编辑坐标或连线等待时间时可用"});
             addGroup("截图与图像采集",

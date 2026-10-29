@@ -14,6 +14,12 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.concurrent.CancellationException;
+import java.util.function.BooleanSupplier;
+import java.util.function.Supplier;
+import com.macro.flow.ImageCheckConfig;
+import com.macro.flow.ImageSearchScope;
+import com.macro.ui.capture.CaptureWindowService;
+import java.io.IOException;
 
 /** 采集所有显示器并在屏幕图像中执行模板识别。 */
 public final class ScreenRecognitionService {
@@ -22,34 +28,138 @@ public final class ScreenRecognitionService {
 
     private final OpenCvTemplateMatcher openCvTemplateMatcher =
             new OpenCvTemplateMatcher();
+    private final Supplier<List<ScreenGeometry>> geometrySource;
+    private final CaptureSource captureSource;
+    private final Supplier<RecognitionSession> sessionSource;
+    private final WindowRecognitionScope windowScopes;
+
+    public ScreenRecognitionService() {
+        this(ScreenRecognitionService::desktopGeometry, ScreenRecognitionService::captureDesktop);
+    }
+
+    /** 注入合成屏幕以检查局部捕获，不接触真实桌面。 */
+    ScreenRecognitionService(Supplier<List<ScreenGeometry>> geometrySource, CaptureSource captureSource) {
+        this(geometrySource, captureSource, RecognitionSession::new);
+    }
+
+    ScreenRecognitionService(Supplier<List<ScreenGeometry>> geometrySource, CaptureSource captureSource,
+                             Supplier<RecognitionSession> sessionSource) {
+        this(geometrySource, captureSource, sessionSource, new CaptureWindowService());
+    }
+
+    ScreenRecognitionService(Supplier<List<ScreenGeometry>> geometrySource, CaptureSource captureSource,
+                             Supplier<RecognitionSession> sessionSource, CaptureWindowService windows) {
+        this.geometrySource = geometrySource;
+        this.captureSource = captureSource;
+        this.sessionSource = sessionSource;
+        windowScopes = new WindowRecognitionScope(windows);
+    }
+
+    public void clearWindowBindings() { windowScopes.clear(); }
+
+    /** 仅在识别请求到达时解析窗口，载入配置和播放预检不枚举窗口或截图。 */
+    public CaptureScope captureScope(ImageCheckConfig config, BooleanSupplier stop) throws IOException {
+        checkCaptureCancelled(stop);
+        config.validateSearchScope();
+        List<ScreenGeometry> desktop = screenGeometry();
+        return new CaptureScope(desktop, config.getSearchScope() == ImageSearchScope.WINDOW
+                ? windowScopes.resolve(config.getSearchWindow(), desktop) : null);
+    }
+
+    public final class CaptureScope {
+        private final List<ScreenGeometry> desktop;
+        private final WindowRecognitionScope.Area window;
+        private CaptureScope(List<ScreenGeometry> desktop, WindowRecognitionScope.Area window) { this.desktop = desktop; this.window = window; }
+        List<ScreenGeometry> screens() { return window == null ? desktop : window.screens(); }
+        String cacheKey() { return window == null ? "DESKTOP" : window.key(); }
+        public void verify(BooleanSupplier stop) throws IOException {
+            checkCaptureCancelled(stop);
+            if (window != null) {
+                if (!desktop.equals(screenGeometry())) throw new IOException("显示器布局或 DPI 已变化，请重新识别");
+                window.verify();
+            }
+        }
+        public List<ScreenSnapshot> captureScreens(Rectangle region, BooleanSupplier stop) throws IOException, AWTException {
+            verify(stop);
+            List<ScreenSnapshot> snapshots = window == null
+                    ? ScreenRecognitionService.this.captureScreens(screens(), region, stop)
+                    : ScreenRecognitionService.this.captureScreens(window.captureRegions(region), null, stop);
+            verify(stop);
+            return snapshots;
+        }
+    }
+
+    RecognitionSession beginRecognition() { return sessionSource.get(); }
+
+    /** 仅读取显示器位置与 DPI，不截屏；位置缓存据此失效。 */
+    List<ScreenGeometry> screenGeometry() {
+        return List.copyOf(geometrySource.get());
+    }
 
     /** 采集当前所有显示器的最高分辨率画面。 */
     public List<ScreenSnapshot> captureScreens() throws AWTException {
+        return captureScreens(screenGeometry(), null, () -> false);
+    }
+
+    /** region 为空时全屏捕获，否则只捕获与选区相交的显示器部分。 */
+    List<ScreenSnapshot> captureScreens(List<ScreenGeometry> screens, Rectangle region,
+                                      BooleanSupplier stopRequested) throws AWTException {
+        List<ScreenSnapshot> snapshots = new ArrayList<>(screens.size());
+        for (ScreenGeometry screen : screens) {
+            checkCaptureCancelled(stopRequested);
+            Rectangle bounds = screen.bounds();
+            if (region != null) bounds = bounds.intersection(region);
+            if (bounds.isEmpty()) continue;
+            MultiResolutionImage capture = captureSource.capture(screen, new Rectangle(bounds));
+            checkCaptureCancelled(stopRequested);
+            BufferedImage image = copyHighestResolutionVariant(capture);
+            snapshots.add(new ScreenSnapshot(image, bounds, screen.displayName()));
+        }
+        checkCaptureCancelled(stopRequested);
+        return snapshots;
+    }
+
+    private static void checkCaptureCancelled(BooleanSupplier stopRequested) {
+        if (Thread.currentThread().isInterrupted() || stopRequested.getAsBoolean()) {
+            throw new CancellationException("图像识别已取消");
+        }
+    }
+
+    private static List<ScreenGeometry> desktopGeometry() {
         if (GraphicsEnvironment.isHeadless()) {
             throw new IllegalStateException("当前环境不支持屏幕图像识别");
         }
-
         GraphicsDevice[] devices = GraphicsEnvironment
                 .getLocalGraphicsEnvironment()
                 .getScreenDevices();
-        List<ScreenSnapshot> snapshots = new ArrayList<>(devices.length);
+        List<ScreenGeometry> screens = new ArrayList<>(devices.length);
         for (int index = 0; index < devices.length; index++) {
-            if (Thread.currentThread().isInterrupted()) {
-                throw new CancellationException("图像识别已取消");
-            }
             GraphicsDevice device = devices[index];
             GraphicsConfiguration configuration = device.getDefaultConfiguration();
-            Rectangle logicalBounds = configuration.getBounds();
-            MultiResolutionImage capture = new Robot(device)
-                    .createMultiResolutionScreenCapture(logicalBounds);
-            BufferedImage image = copyHighestResolutionVariant(capture);
-            snapshots.add(new ScreenSnapshot(
-                    image,
-                    new Rectangle(logicalBounds),
-                    "显示器 " + (index + 1)
-            ));
+            screens.add(new ScreenGeometry(device.getIDstring(), configuration.getBounds(),
+                    configuration.getDefaultTransform().getScaleX(),
+                    configuration.getDefaultTransform().getScaleY(), "显示器 " + (index + 1)));
         }
-        return snapshots;
+        return screens;
+    }
+
+    private static MultiResolutionImage captureDesktop(ScreenGeometry screen, Rectangle bounds) throws AWTException {
+        for (GraphicsDevice device : GraphicsEnvironment.getLocalGraphicsEnvironment().getScreenDevices()) {
+            if (device.getIDstring().equals(screen.id())) {
+                return new Robot(device).createMultiResolutionScreenCapture(bounds);
+            }
+        }
+        throw new AWTException("显示器配置已变化，请重新识别");
+    }
+
+    record ScreenGeometry(String id, Rectangle bounds, double scaleX, double scaleY, String displayName) {
+        ScreenGeometry { bounds = new Rectangle(bounds); }
+        @Override public Rectangle bounds() { return new Rectangle(bounds); }
+    }
+
+    @FunctionalInterface
+    interface CaptureSource {
+        MultiResolutionImage capture(ScreenGeometry screen, Rectangle bounds) throws AWTException;
     }
 
     /** 在已采集的所有屏幕中查找相互独立的匹配位置。 */
@@ -58,24 +168,60 @@ public final class ScreenRecognitionService {
             BufferedImage template,
             double threshold
     ) {
+        return recognize(snapshots, template, threshold, false);
+    }
+
+    /** 按动作开关匹配已有快照，原尺寸命中时不启动缩放搜索。 */
+    public RecognitionReport recognize(List<ScreenSnapshot> snapshots, BufferedImage template,
+                                        double threshold, boolean scaleMatchingEnabled) {
+        return recognize(snapshots, template, threshold, scaleMatchingEnabled, () -> false);
+    }
+
+    /** 测试窗口和播放器共用的可取消入口，一次快照依次用于所有匹配比例。 */
+    public RecognitionReport recognize(List<ScreenSnapshot> snapshots, BufferedImage template,
+                                        double threshold, boolean scaleMatchingEnabled, BooleanSupplier stopRequested) {
+        return recognize(snapshots, template, threshold, scaleMatchingEnabled, stopRequested, TemplateScaleRange.DEFAULT);
+    }
+
+    public RecognitionReport recognize(List<ScreenSnapshot> snapshots, BufferedImage template,
+                                        double threshold, boolean scaleMatchingEnabled, BooleanSupplier stopRequested,
+                                        TemplateScaleRange range) {
+        try (RecognitionSession session = beginRecognition()) {
+            return recognize(snapshots, template, threshold, scaleMatchingEnabled, stopRequested, session, true, range);
+        }
+    }
+
+    RecognitionReport recognize(List<ScreenSnapshot> snapshots, BufferedImage template,
+                                double threshold, boolean scaleMatchingEnabled, BooleanSupplier stopRequested,
+                                RecognitionSession session, boolean allowParallelScales) {
+        return recognize(snapshots, template, threshold, scaleMatchingEnabled, stopRequested, session,
+                allowParallelScales, TemplateScaleRange.DEFAULT);
+    }
+
+    private RecognitionReport recognize(List<ScreenSnapshot> snapshots, BufferedImage template,
+                                double threshold, boolean scaleMatchingEnabled, BooleanSupplier stopRequested,
+                                RecognitionSession session, boolean allowParallelScales, TemplateScaleRange range) {
+        java.util.Objects.requireNonNull(range);
+        if (Thread.currentThread().isInterrupted() || stopRequested.getAsBoolean()) {
+            throw new CancellationException("图像识别已取消");
+        }
         long initializationMillis = openCvTemplateMatcher.ensureLoaded();
         if (snapshots == null || snapshots.isEmpty()) {
             return RecognitionReport.empty(
                     initializationMillis
             );
         }
-        long heapBefore = usedHeapBytes();
         List<RecognitionResult> matches = new ArrayList<>();
         RecognitionResult bestCandidate = null;
+        List<OpenCvTemplateMatcher.MatchResult> originalCandidates = new ArrayList<>();
         boolean truncated = false;
         long estimatedWorkingMemoryBytes = 0L;
-        ProcessMemoryMonitor memoryMonitor = ProcessMemoryMonitor.start();
         long startedAt = System.nanoTime();
         long elapsedMillis;
 
-        try {
+        {
             for (ScreenSnapshot snapshot : snapshots) {
-                if (Thread.currentThread().isInterrupted()) {
+                if (Thread.currentThread().isInterrupted() || stopRequested.getAsBoolean()) {
                     throw new CancellationException("图像识别已取消");
                 }
                 int remainingResultCount = Math.max(
@@ -87,8 +233,10 @@ public final class ScreenRecognitionService {
                                 snapshot.image(),
                                 template,
                                 threshold,
-                                remainingResultCount
+                                remainingResultCount,
+                                stopRequested
                         );
+                originalCandidates.add(searchResult.bestCandidate());
                 truncated |= searchResult.truncated();
                 for (OpenCvTemplateMatcher.MatchResult match
                         : searchResult.matches()) {
@@ -114,23 +262,44 @@ public final class ScreenRecognitionService {
                         )
                 );
             }
+            if (scaleMatchingEnabled && matches.isEmpty()) {
+                for (int index = 0; index < snapshots.size(); index++) {
+                    ScreenSnapshot snapshot = snapshots.get(index);
+                    OpenCvTemplateMatcher.SearchResult scaled = openCvTemplateMatcher.findAllScaled(
+                            snapshot.image(), template, threshold,
+                            Math.max(1, MAX_RECOGNITION_RESULT_COUNT - matches.size()),
+                            originalCandidates.get(index), stopRequested, allowParallelScales, range);
+                    truncated |= scaled.truncated();
+                    for (OpenCvTemplateMatcher.MatchResult match : scaled.matches()) {
+                        if (matches.size() >= MAX_RECOGNITION_RESULT_COUNT) {
+                            truncated = true;
+                            break;
+                        }
+                        matches.add(toRecognitionResult(snapshot, match));
+                    }
+                    RecognitionResult candidate = toRecognitionResult(snapshot, scaled.bestCandidate());
+                    if (candidate != null && (bestCandidate == null || candidate.similarity() > bestCandidate.similarity())) {
+                        bestCandidate = candidate;
+                    }
+                    estimatedWorkingMemoryBytes = Math.max(estimatedWorkingMemoryBytes,
+                            openCvTemplateMatcher.estimateScaleWorkingMemoryBytes(snapshot.image(), template, range));
+                }
+                estimatedWorkingMemoryBytes += openCvTemplateMatcher.scaleCacheBytes();
+            }
             elapsedMillis = (System.nanoTime() - startedAt) / 1_000_000L;
-        } finally {
-            memoryMonitor.close();
         }
 
         matches.sort(Comparator.comparingDouble(
                 RecognitionResult::similarity
         ).reversed());
-        long heapDeltaBytes = Math.max(0L, usedHeapBytes() - heapBefore);
         return new RecognitionReport(
                 matches,
                 bestCandidate,
                 truncated,
                 elapsedMillis,
                 initializationMillis,
-                heapDeltaBytes,
-                memoryMonitor.peakIncreaseBytes(),
+                session.heapDeltaBytes(),
+                session.peakIncreaseBytes(),
                 estimatedWorkingMemoryBytes
         );
     }
@@ -154,12 +323,6 @@ public final class ScreenRecognitionService {
         );
     }
 
-    /** 取得当前 JVM 已使用的堆字节数，用于识别前后内存增量统计。 */
-    private long usedHeapBytes() {
-        Runtime runtime = Runtime.getRuntime();
-        return runtime.totalMemory() - runtime.freeMemory();
-    }
-
     /** 将截图像素坐标换算为 Swing/Robot 使用的屏幕逻辑坐标。 */
     private Rectangle toLogicalBounds(
             ScreenSnapshot snapshot,
@@ -170,12 +333,12 @@ public final class ScreenRecognitionService {
                 / (double) Math.max(1, screenBounds.width);
         double scaleY = snapshot.image().getHeight()
                 / (double) Math.max(1, screenBounds.height);
-        return new Rectangle(
-                screenBounds.x + (int) Math.round(pixelBounds.x / scaleX),
-                screenBounds.y + (int) Math.round(pixelBounds.y / scaleY),
-                Math.max(1, (int) Math.round(pixelBounds.width / scaleX)),
-                Math.max(1, (int) Math.round(pixelBounds.height / scaleY))
-        );
+        int x = Math.max(0, Math.min(screenBounds.width - 1, (int)Math.round(pixelBounds.x / scaleX)));
+        int y = Math.max(0, Math.min(screenBounds.height - 1, (int)Math.round(pixelBounds.y / scaleY)));
+        // 原点和宽高分别舍入时，靠右/下的结果可能多出一个逻辑像素；点击框必须留在截图范围内。
+        return new Rectangle(screenBounds.x + x, screenBounds.y + y,
+                Math.max(1, Math.min(screenBounds.width - x, (int)Math.round(pixelBounds.width / scaleX))),
+                Math.max(1, Math.min(screenBounds.height - y, (int)Math.round(pixelBounds.height / scaleY))));
     }
 
     /** 复制多分辨率截图中像素数量最多的版本。 */

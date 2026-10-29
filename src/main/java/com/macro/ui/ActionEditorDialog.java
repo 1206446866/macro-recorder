@@ -4,7 +4,11 @@ import com.macro.constant.UiConstants;
 
 import com.macro.flow.BranchCondition;
 import com.macro.flow.ImageCheckConfig;
+import com.macro.flow.ImageSearchScope;
+import com.macro.model.TargetWindow;
+import com.macro.ui.dialog.CaptureWindowDialog;
 import com.macro.flow.ImageCheckBehavior;
+import com.macro.flow.ImageClickMode;
 import com.macro.flow.MacroBranch;
 import com.macro.flow.MacroFlowFactory;
 import com.macro.flow.MacroNode;
@@ -265,7 +269,7 @@ public final class ActionEditorDialog extends JDialog {
         ));
 
         pack();
-        int initialHeight = initialType == EditorType.IMAGE_CHECK ? 460 : 380;
+        int initialHeight = initialType == EditorType.IMAGE_CHECK ? 580 : 380;
         setMinimumSize(new Dimension(720, initialHeight));
         setSize(720, initialHeight);
         setResizable(false);
@@ -359,7 +363,7 @@ public final class ActionEditorDialog extends JDialog {
         subtitleLabel.setText(getEditorTypeName(type));
         delayField.setText(type == EditorType.IMAGE_CHECK ? "1000" : "0");
         showPropertyPanel(type, null);
-        int height = type == EditorType.IMAGE_CHECK ? 460 : 380;
+        int height = type == EditorType.IMAGE_CHECK ? 580 : 380;
         setMinimumSize(new Dimension(720, height));
         setSize(720, height);
     }
@@ -423,6 +427,10 @@ public final class ActionEditorDialog extends JDialog {
 
     /** 读取并校验普通动作延迟或图像识别重试延迟。 */
     private long parseDelay() {
+        if (currentPropertyPanel instanceof ImageCheckPanel imagePanel && !delayField.isVisible()) {
+            imagePanel.rememberRetryDelay();
+            return imagePanel.retainedRetryDelay;
+        }
         return NumericInputUtil.readLong(delayField);
     }
 
@@ -732,7 +740,10 @@ public final class ActionEditorDialog extends JDialog {
     /** 根据节点类型动态创建的属性面板基类。 */
     private abstract class PropertyPanel extends JPanel {
 
-        private int propertyCount;
+        private final List<JPanel> propertyRows = new ArrayList<>();
+        private final JPanel delayRow;
+        private final Component filler = Box.createVerticalGlue();
+        private final JPanel separator = new JPanel();
 
         /** 建立左右两栏公共表单，复用动作类型和延迟字段，并预留属性行。 */
         private PropertyPanel() {
@@ -745,9 +756,11 @@ public final class ActionEditorDialog extends JDialog {
             setLayout(new GridBagLayout());
 
             addEditorRow(createFormRow("动作类型", actionTypeCombo), 0, 0);
-            addEditorRow(createFormRow(delayLabel, delayField), 2, 0);
+            delayField.setVisible(true);
+            delayField.setEnabled(true);
+            delayRow = createFormRow(delayLabel, delayField);
+            addEditorRow(delayRow, 2, 0);
 
-            JPanel separator = new JPanel();
             separator.setBackground(PALETTE.border());
             separator.setPreferredSize(new Dimension(1, 1));
 
@@ -766,15 +779,56 @@ public final class ActionEditorDialog extends JDialog {
             fillerConstraints.gridwidth = 3;
             fillerConstraints.weighty = 1;
             fillerConstraints.fill = GridBagConstraints.VERTICAL;
-            add(Box.createVerticalGlue(), fillerConstraints);
+            add(filler, fillerConstraints);
         }
 
         /** 把下一个属性按既定顺序加入左右两栏，沿用公共表单间距。 */
         protected void addProperty(String name, JComponent component) {
-            int column = propertyCount % 2 == 0 ? 0 : 2;
-            int row = propertyCount / 2 + 1;
-            addEditorRow(createFormRow(name, component), column, row);
-            propertyCount++;
+            JPanel row = createFormRow(name, component);
+            propertyRows.add(row);
+            addEditorRow(row, 0, 1);
+            reflowProperties();
+        }
+
+        /** 收起整行（含标签），保留原控件和值，不删除或重建编辑状态。 */
+        protected void setPropertyVisible(JComponent component, boolean visible) {
+            component.setVisible(visible);
+            component.getParent().setVisible(visible);
+        }
+
+        protected void setDelayVisible(boolean visible) {
+            delayRow.setVisible(visible);
+            delayField.setVisible(visible);
+            delayField.setEnabled(visible);
+        }
+
+        /** 原左右配对保持对应关系，整排隐藏时收拢下方字段，避免 X/Y 或成功/失败错列。 */
+        protected void reflowProperties() {
+            GridBagLayout layout = (GridBagLayout) getLayout();
+            int rowIndex = 1;
+            for (int index = 0; index < propertyRows.size(); index += 2) {
+                JPanel left = propertyRows.get(index);
+                JPanel right = index + 1 < propertyRows.size() ? propertyRows.get(index + 1) : null;
+                if (!left.isVisible() && (right == null || !right.isVisible())) continue;
+                for (int side = 0; side < 2 && index + side < propertyRows.size(); side++) {
+                    JPanel row = propertyRows.get(index + side);
+                    if (!row.isVisible()) continue;
+                    GridBagConstraints constraints = layout.getConstraints(row);
+                    constraints.gridx = side * 2;
+                    constraints.gridy = rowIndex;
+                    layout.setConstraints(row, constraints);
+                }
+                rowIndex++;
+            }
+            int rows = Math.max(4, rowIndex);
+            GridBagConstraints fillerConstraints = layout.getConstraints(filler);
+            fillerConstraints.gridy = rows;
+            layout.setConstraints(filler, fillerConstraints);
+            GridBagConstraints separatorConstraints = layout.getConstraints(separator);
+            separatorConstraints.gridheight = rows;
+            layout.setConstraints(separator, separatorConstraints);
+            revalidate();
+            repaint();
         }
 
         /** 将字段行放入左右两栏表单。 */
@@ -808,14 +862,24 @@ public final class ActionEditorDialog extends JDialog {
                 new SpinnerNumberModel(90, 1, 100, 1)
         );
 
+        /** 仅属于当前图像动作，未勾选时沿用原尺寸识别。 */
+        private final JCheckBox scaleMatchingCheckBox = new JCheckBox("允许缩放匹配");
+        private final JComboBox<ImageSearchScope> searchScope = new JComboBox<>(ImageSearchScope.values());
+        private final JButton searchWindowButton = createButton("指定识别窗口", false);
+        private TargetWindow searchWindow;
+
         /** 当前选中的模板文件。 */
         private File templateFile;
 
         /** 成功与失败独立配置，均复用现有深色下拉框样式。 */
-        private final JComboBox<ImageCheckBehavior> successBehavior = createBehaviorCombo();
-        private final JComboBox<ImageCheckBehavior> failureBehavior = createBehaviorCombo();
+        private final JComboBox<ImageCheckBehavior> successBehavior = createBehaviorCombo(true);
+        private final JComboBox<ImageCheckBehavior> failureBehavior = createBehaviorCombo(false);
+        private final JComboBox<ImageClickMode> clickMode = new JComboBox<>(ImageClickMode.values());
+        private final JTextField failureClickX = createIntegerField("", "失败点击 X 坐标");
+        private final JTextField failureClickY = createIntegerField("", "失败点击 Y 坐标");
         private final JComboBox<BranchTarget> successTarget = createTargetCombo("successTarget");
         private final JComboBox<BranchTarget> failureTarget = createTargetCombo("failureTarget");
+        private long retainedRetryDelay = 1000L;
 
         /** 创建带稳定控件名称和公共深色样式的目标节点下拉框。 */
         private JComboBox<BranchTarget> createTargetCombo(String name) {
@@ -858,10 +922,31 @@ public final class ActionEditorDialog extends JDialog {
             if (selection != null) combo.setSelectedItem(selection);
         }
 
-        /** 仅当对应分支选择指定跳转时启用其目标下拉框，成功和失败互不影响。 */
+        /** 仅展示所选行为需要的属性，成功/失败各自独立，值保留在原控件中。 */
         private void updateTargetEnabled() {
             successTarget.setEnabled(successBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
             failureTarget.setEnabled(failureBehavior.getSelectedItem() == ImageCheckBehavior.JUMP);
+            ImageCheckBehavior selected = (ImageCheckBehavior) successBehavior.getSelectedItem();
+            clickMode.setEnabled(selected != null && selected.requiresClick());
+            ImageCheckBehavior failed = (ImageCheckBehavior) failureBehavior.getSelectedItem();
+            failureClickX.setEnabled(failed != null && failed.requiresClick());
+            failureClickY.setEnabled(failed != null && failed.requiresClick());
+            setPropertyVisible(successTarget, successTarget.isEnabled());
+            setPropertyVisible(failureTarget, failureTarget.isEnabled());
+            setPropertyVisible(clickMode, clickMode.isEnabled());
+            setPropertyVisible(failureClickX, failureClickX.isEnabled());
+            setPropertyVisible(failureClickY, failureClickY.isEnabled());
+            rememberRetryDelay();
+            setDelayVisible(selected == ImageCheckBehavior.RETRY || failed == ImageCheckBehavior.RETRY);
+            reflowProperties();
+        }
+
+        /** 未使用重试时，不让隐藏的临时空值/非法文本阻止保存，沿用上次合法值。 */
+        private void rememberRetryDelay() {
+            try {
+                long value = Long.parseLong(delayField.getText());
+                if (value >= 0) retainedRetryDelay = value;
+            } catch (NumberFormatException ignored) { }
         }
 
         /** 指定跳转必须返回有效节点 ID，其他行为返回空目标，保留默认后继、重试与终止的独立语义。 */
@@ -873,8 +958,9 @@ public final class ActionEditorDialog extends JDialog {
         }
 
         /** 创建使用公共主题和行为名称渲染的分支行为选择框。 */
-        private JComboBox<ImageCheckBehavior> createBehaviorCombo() {
-            JComboBox<ImageCheckBehavior> combo = new JComboBox<>(ImageCheckBehavior.values());
+        private JComboBox<ImageCheckBehavior> createBehaviorCombo(boolean found) {
+            JComboBox<ImageCheckBehavior> combo = new JComboBox<>(ImageCheckBehavior.optionsForResult(found));
+            combo.setName(found ? "successBehavior" : "failureBehavior");
             combo.setFont(FONT_NORMAL);
             ComponentStyleUtil.styleComboBox(combo);
             combo.setRenderer((list, value, index, selected, focus) ->
@@ -887,6 +973,10 @@ public final class ActionEditorDialog extends JDialog {
             super("重试延迟");
             ComponentStyleUtil.styleSpinner(thresholdSpinner);
             NumericInputUtil.installSpinner(thresholdSpinner, "图像匹配阈值（%）");
+            scaleMatchingCheckBox.setName("scaleMatchingEnabled");
+            scaleMatchingCheckBox.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleCheckBox(scaleMatchingCheckBox);
+            scaleMatchingCheckBox.setToolTipText("原尺寸未命中时，在约 67%～150% 范围尝试缩放；可能增加识别耗时");
             templateButton.addActionListener(event -> chooseTemplateImage());
             recognizeButton.setEnabled(false);
             recognizeButton.setToolTipText("使用当前模板测试屏幕识别");
@@ -897,10 +987,40 @@ public final class ActionEditorDialog extends JDialog {
             templateControls.add(recognizeButton, BorderLayout.EAST);
             addProperty("模板 PNG", templateControls);
             addProperty("匹配阈值", thresholdSpinner);
+            searchScope.setName("imageSearchScope"); searchScope.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleComboBox(searchScope);
+            searchScope.setToolTipText("指定窗口时只搜索当前内容区；需在前台显示，不会自动激活或回退桌面");
+            searchWindowButton.setName("imageSearchWindow");
+            searchWindowButton.addActionListener(event -> {
+                CaptureWindowDialog picker = new CaptureWindowDialog(ActionEditorDialog.this, "指定识别窗口",
+                        "只保存窗口描述；识别时需在前台显示，不会自动前置窗口");
+                picker.setVisible(true);
+                picker.getSelection().ifPresent(target -> {
+                    searchWindow = TargetWindow.create().setProcessName(target.processName())
+                            .setWindowTitle(target.title()).setWindowClass(target.windowClass());
+                    updateSearchWindow();
+                });
+            });
+            searchScope.addActionListener(event -> updateSearchWindow());
+            addProperty("识别范围", searchScope);
+            addProperty("识别窗口", searchWindowButton);
+            updateSearchWindow();
             addProperty("成功行为", successBehavior);
             addProperty("失败行为", failureBehavior);
             addProperty("成功目标", successTarget);
             addProperty("失败目标", failureTarget);
+            addProperty("缩放识别", scaleMatchingCheckBox);
+            clickMode.setName("imageClickMode");
+            clickMode.setFont(FONT_NORMAL);
+            ComponentStyleUtil.styleComboBox(clickMode);
+            clickMode.setToolTipText("成功点击使用本次最佳命中范围；失败点击使用独立的屏幕 X/Y 坐标");
+            addProperty("点击方式", clickMode);
+            failureClickX.setName("failureClickX");
+            failureClickY.setName("failureClickY");
+            failureClickX.setToolTipText("未找到图像时的固定屏幕 X 坐标，可为负值；不使用上次命中位置");
+            failureClickY.setToolTipText("未找到图像时的固定屏幕 Y 坐标，可为负值；不跟随识别窗口移动");
+            addProperty("失败点击 X", failureClickX);
+            addProperty("失败点击 Y", failureClickY);
             successBehavior.addActionListener(event -> updateTargetEnabled());
             failureBehavior.addActionListener(event -> updateTargetEnabled());
             refreshTargets();
@@ -908,6 +1028,13 @@ public final class ActionEditorDialog extends JDialog {
 
         /** 载入图像分支行为、模板路径和阈值；缺少配置时恢复新图像节点的默认选择。 */
         private void loadConfig(ImageCheckConfig config) {
+            searchWindow = config == null ? null : config.getSearchWindow();
+            searchScope.setSelectedItem(config == null ? ImageSearchScope.DESKTOP : config.getSearchScope());
+            updateSearchWindow();
+            scaleMatchingCheckBox.setSelected(config != null && config.isScaleMatchingEnabled());
+            clickMode.setSelectedItem(config == null ? ImageClickMode.CENTER : config.getClickMode());
+            failureClickX.setText(config == null || config.getFailureClickX() == null ? "" : config.getFailureClickX().toString());
+            failureClickY.setText(config == null || config.getFailureClickY() == null ? "" : config.getFailureClickY().toString());
             successBehavior.setSelectedItem(config == null
                     ? ImageCheckBehavior.EXECUTE : config.getSuccessBehavior());
             failureBehavior.setSelectedItem(config == null
@@ -932,6 +1059,17 @@ public final class ActionEditorDialog extends JDialog {
                     1,
                     Math.min(100, thresholdPercent)
             ));
+        }
+
+        private void updateSearchWindow() {
+            searchWindowButton.setEnabled(searchScope.getSelectedItem() == ImageSearchScope.WINDOW);
+            setPropertyVisible(searchWindowButton, searchWindowButton.isEnabled());
+            String title = searchWindow == null ? null : searchWindow.getWindowTitle();
+            if (title == null || title.isBlank()) title = "指定识别窗口";
+            if (title.codePointCount(0, title.length()) > 12) title = title.substring(0, title.offsetByCodePoints(0, 12)) + "…";
+            searchWindowButton.setText(title);
+            searchWindowButton.setToolTipText(searchWindow == null ? "请选择识别窗口" : searchWindow.getProcessName() + " · " + searchWindow.getWindowTitle());
+            reflowProperties();
         }
 
         /** 通过现有文件面板选择并验证 PNG，确认后仅更新当前编辑器的未保存模板。 */
@@ -992,7 +1130,8 @@ public final class ActionEditorDialog extends JDialog {
                 imageRecognitionFrame = new ImageRecognitionFrame(ActionEditorDialog.this,
                         () -> templateFile == null ? templateBaseDirectory : templateFile.getParentFile());
             }
-            imageRecognitionFrame.setTemplate(templateFile, threshold / 100.0);
+            imageRecognitionFrame.setTemplate(templateFile, threshold / 100.0, scaleMatchingCheckBox.isSelected());
+            imageRecognitionFrame.setSearchScope((ImageSearchScope) searchScope.getSelectedItem(), searchWindow);
             return imageRecognitionFrame;
         }
 
@@ -1009,6 +1148,14 @@ public final class ActionEditorDialog extends JDialog {
             config.setSuccessBehavior((ImageCheckBehavior) successBehavior.getSelectedItem());
             config.setFailureBehavior((ImageCheckBehavior) failureBehavior.getSelectedItem());
             config.setRetryDelay(retryDelay);
+            config.setScaleMatchingEnabled(scaleMatchingCheckBox.isSelected());
+            config.setClickMode((ImageClickMode) clickMode.getSelectedItem());
+            config.setFailureClickX(readFailureCoordinate(failureClickX, config.getFailureBehavior().requiresClick()));
+            config.setFailureClickY(readFailureCoordinate(failureClickY, config.getFailureBehavior().requiresClick()));
+            config.setSearchScope((ImageSearchScope) searchScope.getSelectedItem());
+            config.setSearchWindow(searchWindow);
+            config.validateSearchScope();
+            config.validateClickBehaviors();
             return new MacroNode(
                     null,
                     NodeType.IMAGE_CHECK,
@@ -1027,6 +1174,15 @@ public final class ActionEditorDialog extends JDialog {
                             )
                     ))
             );
+        }
+
+        private Integer readFailureCoordinate(JTextField field, boolean required) {
+            if (!required && field.getText().isBlank()) return null;
+            try { return NumericInputUtil.readInt(field); }
+            catch (IllegalArgumentException exception) {
+                if (required) throw exception;
+                return null;
+            }
         }
 
         /** 图像节点不从普通输入动作读取配置，图像参数由专用加载入口处理。 */

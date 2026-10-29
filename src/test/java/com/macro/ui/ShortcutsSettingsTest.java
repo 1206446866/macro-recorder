@@ -56,7 +56,8 @@ public final class ShortcutsSettingsTest {
             List<Component> shortcutComponents = descendants(shortcuts);
             List<String> text = shortcutComponents.stream().filter(JLabel.class::isInstance)
                     .map(c -> ((JLabel) c).getText()).toList();
-            for (String expected : List.of("F10", "F11", "F12", "Delete", "Enter", "Esc", "Alt + F4", "Ctrl + V",
+            for (String expected : List.of("F10", "F11", "F12", "Delete", "Ctrl + Z", "撤销时间线修改", "Ctrl + C", "复制选中节点", "粘贴节点", "Ctrl + A", "全选时间线节点", "多选节点", "连续选择节点", "Enter", "Esc", "Alt + F4", "Ctrl + V",
+                    "Ctrl + F", "查找节点", "F3", "Shift + F3", "下一个查找结果", "上一个查找结果", "关闭节点查找",
                     "录制时截图", "暂停 / 继续播放", "停止录制 / 播放", "删除选中操作", "保存当前输入", "取消当前输入",
                     "确认截图", "取消截图", "粘贴图片", "保存设置 / 确认提示", "关闭设置，不保存修改",
                     "关闭图像识别窗口", "关闭提示窗口", "图像采集页可用，文字输入框除外")) {

@@ -269,6 +269,7 @@ public class MacroFrame extends JFrame {
         imageMatcher = new OpenCvImageMatcher(this::getMacroBaseDirectory);
         initFrame();
         initLayout();
+        actionTimelinePanel.setTemplateBaseDirectorySupplier(this::getMacroBaseDirectory);
         initEvents();
         macroFlow.setHeadWaitMillis(appConfig.isStandbyHeadEnabled() ? MacroFlow.DEFAULT_HEAD_WAIT_MILLIS : null);
         actionTimelinePanel.setFlow(macroFlow);
@@ -1270,8 +1271,8 @@ public class MacroFrame extends JFrame {
     }
 
     /** 从图像采集页面启动区域截图。 */
-    private void startImageCapture() {
-        screenCaptureController.startCapture();
+    private void startImageCapture(com.macro.ui.capture.CaptureWindowService.Target target) {
+        screenCaptureController.startCapture(target);
     }
 
     /** 请求录制器进入图像采集状态，按钮和 F10 共用同一入口。 */
@@ -1297,11 +1298,20 @@ public class MacroFrame extends JFrame {
         recordingImageButton.setEnabled(false);
         statusLabel.setText("正在选择图像区域");
         statusDot.setForeground(ACCENT_COLOR);
-        recordingScreenCaptureController.startCapture();
+        try {
+            if (!recorder.prepareImageCapture(session.id())) {
+                activeRecordingImageCaptureSession = null;
+                recordingImageButton.setEnabled(recording);
+                return;
+            }
+            recordingScreenCaptureController.startCapture();
+        } catch (RuntimeException failure) {
+            handleRecordingImageCaptureFailed(failure);
+        }
     }
 
     /** 选区确认后在后台保存 PNG，保存成功才提交 IMAGE_CHECK 节点。 */
-    private void handleRecordingImageCaptured(BufferedImage image) {
+    private void handleRecordingImageCaptured(BufferedImage image, Rectangle selectionBounds) {
         MacroRecorder.ImageCaptureSession session =
                 activeRecordingImageCaptureSession;
         if (session == null || !recording) {
@@ -1332,6 +1342,7 @@ public class MacroFrame extends JFrame {
                                     RECORDING_IMAGE_MATCH_THRESHOLD
                             )
                     );
+                    if (completed) imageMatcher.rememberCapture(savedFile.toPath(), selectionBounds);
                     if (completed && recording) {
                         statusLabel.setText("正在录制 · 已加入图像识别");
                         statusDot.setForeground(DANGER_COLOR);
@@ -1449,6 +1460,7 @@ public class MacroFrame extends JFrame {
     /** 录制成功启动后初始化新的宏状态。 */
     private void initializeNewRecordingState() {
         currentFile = null;
+        imageMatcher.clearLocationCache();
         fileLabel.setText("新录制 MR");
         actions = new ArrayList<>();
         macroFlow = MacroFlowFactory.fromActions(actions);
@@ -1479,7 +1491,7 @@ public class MacroFrame extends JFrame {
         try {
             recorder.stop();
         } catch (NativeHookException e) {
-            showError("停止录制失败：" + e.getMessage());
+            AppMessageDialog.showError(this, "停止录制失败：" + e.getMessage(), e);
         }
     }
 
@@ -1609,6 +1621,11 @@ public class MacroFrame extends JFrame {
             );
 
             // 文件写入成功后，再更新当前文件信息。
+            if (!getMacroBaseDirectory().toPath().toAbsolutePath().normalize()
+                    .equals(file.toPath().toAbsolutePath().normalize().getParent())) {
+                actionTimelinePanel.clearUndoHistory();
+                closeTimelineEditor();
+            }
             if (macroFlow != flowToSave) {
                 macroFlow = flowToSave;
                 actionTimelinePanel.setFlow(macroFlow);
@@ -1664,6 +1681,7 @@ public class MacroFrame extends JFrame {
         String filePath = file == null ? "<未知文件>" : file.getAbsolutePath();
         System.err.println("MR 文件" + operation + "失败：" + filePath);
         exception.printStackTrace(System.err);
+        com.macro.diagnostics.ErrorReporter.report("MR 文件" + operation + "失败：" + filePath, exception);
     }
 
     /** 校验目标窗口并在线程中播放当前流程图。 */
@@ -2365,7 +2383,7 @@ public class MacroFrame extends JFrame {
         try {
             windowSelector.start();
         } catch (NativeHookException e) {
-            showError("启动窗口选择失败：" + e.getMessage());
+            AppMessageDialog.showError(this, "启动窗口选择失败：" + e.getMessage(), e);
         }
     }
 
@@ -2376,7 +2394,7 @@ public class MacroFrame extends JFrame {
         try {
             windowSelector.stop();
         } catch (NativeHookException e) {
-            showError("停止窗口选择失败：" + e.getMessage());
+            AppMessageDialog.showError(this, "停止窗口选择失败：" + e.getMessage(), e);
         }
 
         showHomePage();
@@ -2478,6 +2496,7 @@ public class MacroFrame extends JFrame {
         List<MacroAction> loadedActions =
                 new ArrayList<>(macroFile.getActions());
 
+        imageMatcher.clearLocationCache();
         macroFlow = macroFile.getFlow() == null
                 ? MacroFlowFactory.fromActions(loadedActions)
                 : macroFile.getFlow();

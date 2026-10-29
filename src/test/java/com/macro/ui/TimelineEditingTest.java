@@ -132,7 +132,7 @@ public final class TimelineEditingTest {
 
     private static void testRetryEditing() throws ReflectiveOperationException {
         for (ImageCheckBehavior success : ImageCheckBehavior.values()) {
-            for (ImageCheckBehavior failure : ImageCheckBehavior.values()) {
+            for (ImageCheckBehavior failure : ImageCheckBehavior.optionsForResult(false)) {
                 if (success != ImageCheckBehavior.RETRY && failure != ImageCheckBehavior.RETRY) continue;
                 ImageCheckConfig config = new ImageCheckConfig("template.png", 0.9);
                 config.setSuccessBehavior(success);

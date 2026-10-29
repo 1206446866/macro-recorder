@@ -72,6 +72,8 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
 
     /** 使用物理屏幕坐标查询顶层窗口，保持与控件区域过滤相同的坐标空间。 */
     private final BiFunction<Integer, Integer, WinDef.HWND> rootWindowAtPoint;
+    private final CaptureMouseRelease captureMouseRelease;
+    private long preparedCaptureSessionId;
 
     private long lastTime;
 
@@ -114,10 +116,16 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     /** 允许坐标回归检查注入指针与窗口查询，不注册钩子，也不操作真实桌面。 */
     MacroRecorder(AppConfig appConfig, double dpiScale, Supplier<WindowsMouseUtil.POINT> cursorPosition,
             BiFunction<Integer, Integer, WinDef.HWND> rootWindowAtPoint) {
+        this(appConfig, dpiScale, cursorPosition, rootWindowAtPoint, new CaptureMouseRelease());
+    }
+
+    MacroRecorder(AppConfig appConfig, double dpiScale, Supplier<WindowsMouseUtil.POINT> cursorPosition,
+            BiFunction<Integer, Integer, WinDef.HWND> rootWindowAtPoint, CaptureMouseRelease captureMouseRelease) {
         this.appConfig = appConfig;
         this.dpiScale = dpiScale;
         this.cursorPosition = cursorPosition;
         this.rootWindowAtPoint = rootWindowAtPoint;
+        this.captureMouseRelease = captureMouseRelease;
     }
 
     /**
@@ -360,7 +368,11 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
             }
             imageCaptureStartedPaused = state == RecorderState.PAUSED;
             long realNow = System.currentTimeMillis();
-            if (!imageCaptureStartedPaused) releasePressedInputs(timelineNow(realNow));
+            if (!imageCaptureStartedPaused) {
+                List<Integer> heldButtons = new ArrayList<>(pressedMouseButtons.keySet());
+                releasePressedInputs(timelineNow(realNow));
+                heldButtons.forEach(controlInputFilter::suppressMouseUntilNextPress);
+            }
             LogicalPoint point = getLogicalCursorPosition();
             boolean fromControlBar = controlInputFilter.containsCurrentPoint(point.x() * dpiScale, point.y() * dpiScale);
             imageCaptureBridgeAllowed = !fromControlBar || lastRecordedMousePoint != null;
@@ -402,6 +414,18 @@ public class MacroRecorder implements NativeMouseInputListener, NativeMouseWheel
     /** 取消图像采集，仅恢复时间轴并按需补充鼠标桥接轨迹。 */
     public boolean cancelImageCapture(long sessionId) {
         return finishImageCapture(sessionId, null);
+    }
+
+    /** 主窗口在隐藏/冻结画面前调用；旧会话不发送输入，同一会话只准备一次。 */
+    public boolean prepareImageCapture(long sessionId) {
+        synchronized (recordingLock) {
+            if (state != RecorderState.IMAGE_CAPTURE || activeImageCaptureSession == null
+                    || activeImageCaptureSession.id() != sessionId) return false;
+            if (preparedCaptureSessionId == sessionId) return true;
+            captureMouseRelease.releasePressedButtons(controlInputFilter::suppressMouseUntilNextPress);
+            preparedCaptureSessionId = sessionId;
+            return true;
+        }
     }
 
     /** 返回线程安全的普通动作快照。 */

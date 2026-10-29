@@ -17,6 +17,7 @@ public class MacroApplication {
 
     /** 申请单实例资格并在事件线程创建主窗口；重复启动只唤起已有实例，启动失败时统一提示。 */
     public static void main(String[] args) {
+        AppMessageDialog.installUncaughtExceptionHandler();
         AtomicReference<MacroFrame> mainWindow = new AtomicReference<>();
         WindowsSingleInstance instance;
         try {

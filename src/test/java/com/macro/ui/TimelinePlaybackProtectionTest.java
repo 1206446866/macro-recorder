@@ -68,14 +68,17 @@ public final class TimelinePlaybackProtectionTest {
             check(text(track(fixture.panel)) == null, "只读重试仍创建编辑器");
             JPopupMenu menu = (JPopupMenu) invoke(fixture.panel, "createContextMenu",
                     new Class<?>[]{MacroNode.class}, fixture.first);
-            for (int index = 0; index < 3; index++) {
-                JMenuItem item = (JMenuItem) menu.getComponent(index);
+            for (Component entry : menu.getComponents()) {
+                JMenuItem item = (JMenuItem) entry;
+                if ("复制节点".equals(item.getText())) {
+                    check(item.isEnabled(), "只读复制被禁用");
+                    continue;
+                }
                 check(!item.isEnabled(), "修改菜单没有禁用");
                 for (var listener : item.getActionListeners()) {
                     listener.actionPerformed(new ActionEvent(item, 0, "绕过禁用状态"));
                 }
             }
-            check(menu.getComponent(3).isEnabled(), "只读复制被禁用");
             fixture.panel.refreshTimeline();
             fixture.panel.setFlow(fixture.flow);
             check(fixture.panel.getFlow() == fixture.flow && fixture.panel.isEnabled(), "查看能力被禁用");

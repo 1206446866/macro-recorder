@@ -8,7 +8,7 @@
 
     <groupId>com.macro</groupId>
     <artifactId>recorder</artifactId>
-    <version>1.1.0</version>
+    <version>1.2.0</version>
 
     <name>recorder</name>
     <description>Java macro recorder</description>
@@ -98,6 +98,7 @@
                     <argLine>-Dfile.encoding=UTF-8</argLine>
                     <systemPropertyVariables>
                         <macro.test.sandboxRoot>${project.build.directory}/test-sandboxes</macro.test.sandboxRoot>
+                        <macro.errorReport.applicationDirectory>${project.build.directory}/test-error-reports</macro.errorReport.applicationDirectory>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>
@@ -123,6 +124,32 @@
                 <version>3.8.1</version>
                 <executions>
                     <execution>
+                        <id>resolve-ocr-dll-archives</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>copy</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${project.build.directory}/ocr-upstream</outputDirectory>
+                            <artifactItems>
+                                <artifactItem>
+                                    <groupId>net.sourceforge.lept4j</groupId>
+                                    <artifactId>lept4j</artifactId>
+                                    <version>1.19.1</version>
+                                    <type>jar</type>
+                                    <destFileName>lept4j.jar</destFileName>
+                                </artifactItem>
+                                <artifactItem>
+                                    <groupId>net.sourceforge.tess4j</groupId>
+                                    <artifactId>tess4j</artifactId>
+                                    <version>5.11.0</version>
+                                    <type>jar</type>
+                                    <destFileName>tess4j.jar</destFileName>
+                                </artifactItem>
+                            </artifactItems>
+                        </configuration>
+                    </execution>
+                    <execution>
                         <id>copy-dependencies</id>
                         <phase>package</phase>
                         <goals>
@@ -133,6 +160,61 @@
                                 ${project.build.directory}/lib
                             </outputDirectory>
                             <includeScope>runtime</includeScope>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!-- 仅将校验通过的 Windows x64 DLL 加入应用资源。上游 JAR 不进入运行依赖。 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>prepare-ocr-dlls</id>
+                        <phase>generate-resources</phase>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                        <configuration>
+                            <target>
+                                <macrodef name="verify-ocr-sha256">
+                                    <attribute name="file"/>
+                                    <attribute name="expected"/>
+                                    <sequential>
+                                        <fail message="OCR SHA-256 校验失败：@{file}">
+                                            <condition>
+                                                <not>
+                                                    <checksum file="@{file}" algorithm="SHA-256" property="@{expected}"/>
+                                                </not>
+                                            </condition>
+                                        </fail>
+                                    </sequential>
+                                </macrodef>
+                                <property name="ocr.upstream" location="${project.build.directory}/ocr-upstream"/>
+                                <property name="ocr.staging" location="${project.build.directory}/ocr-staging"/>
+                                <verify-ocr-sha256 file="${ocr.upstream}/lept4j.jar"
+                                    expected="5feb69a8fc9550809b23cb980270cdf99368dea330ba7d98789e2dc93f8bef6f"/>
+                                <verify-ocr-sha256 file="${ocr.upstream}/tess4j.jar"
+                                    expected="d7e452bc589c409fa36cf75ec03f5d1016b87f9f6852b33312cd0ccd1ebb4b53"/>
+                                <unzip src="${ocr.upstream}/lept4j.jar" dest="${ocr.staging}">
+                                    <patternset><include name="win32-x86-64/libleptonica1841.dll"/></patternset>
+                                </unzip>
+                                <unzip src="${ocr.upstream}/tess4j.jar" dest="${ocr.staging}">
+                                    <patternset><include name="win32-x86-64/libtesseract534.dll"/></patternset>
+                                </unzip>
+                                <verify-ocr-sha256 file="${ocr.staging}/win32-x86-64/libleptonica1841.dll"
+                                    expected="0b2cb584baeb38b90033344b4d70830b33ba01396fb9142b9b733e83c8a73fb8"/>
+                                <verify-ocr-sha256 file="${ocr.staging}/win32-x86-64/libtesseract534.dll"
+                                    expected="10dcfcaa21faa72ef331d43fbe9a265b451f2c31a3bcfbb69741fc485c69f6ed"/>
+                                <copy todir="${project.build.outputDirectory}/ocr/native" overwrite="true">
+                                    <fileset dir="${ocr.staging}/win32-x86-64">
+                                        <include name="libleptonica1841.dll"/>
+                                        <include name="libtesseract534.dll"/>
+                                    </fileset>
+                                </copy>
+                            </target>
                         </configuration>
                     </execution>
                 </executions>

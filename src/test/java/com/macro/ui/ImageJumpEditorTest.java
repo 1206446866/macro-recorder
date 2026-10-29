@@ -35,10 +35,14 @@ class ImageJumpEditorTest {
                 failure.setSelectedIndex(0);
                 for (ImageCheckBehavior successBehavior : ImageCheckBehavior.values()) {
                     behaviors.get(0).setSelectedItem(successBehavior);
-                    for (ImageCheckBehavior failureBehavior : ImageCheckBehavior.values()) {
+                    for (ImageCheckBehavior failureBehavior : ImageCheckBehavior.optionsForResult(false)) {
                         behaviors.get(1).setSelectedItem(failureBehavior);
                         assertEquals(successBehavior == ImageCheckBehavior.JUMP, success.isEnabled());
                         assertEquals(failureBehavior == ImageCheckBehavior.JUMP, failure.isEnabled());
+                        assertEquals(success.isEnabled(), success.isVisible());
+                        assertEquals(success.isEnabled(), success.getParent().isVisible(), "隐藏目标时标签也应收起");
+                        assertEquals(failure.isEnabled(), failure.isVisible());
+                        assertEquals(failure.isEnabled(), failure.getParent().isVisible());
                         assertEquals(1, success.getSelectedIndex(), "切换启用状态不能改写成功目标");
                         assertEquals(0, failure.getSelectedIndex(), "切换启用状态不能改写失败目标");
                     }

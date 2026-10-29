@@ -66,6 +66,12 @@ public final class ImageTemplatePathUtil {
             copy.setSuccessBehavior(config.getSuccessBehavior());
             copy.setFailureBehavior(config.getFailureBehavior());
             copy.setRetryDelay(config.getRetryDelay());
+            copy.setScaleMatchingEnabled(config.isScaleMatchingEnabled());
+            copy.setClickMode(config.getClickMode());
+            copy.setFailureClickX(config.getFailureClickX());
+            copy.setFailureClickY(config.getFailureClickY());
+            copy.setSearchScope(config.getSearchScope());
+            copy.setSearchWindow(config.getSearchWindow());
             entry.setValue(new MacroNode(node.getId(), node.getType(), node.getAction(), copy, node.getChildren()));
             changed = true;
         }

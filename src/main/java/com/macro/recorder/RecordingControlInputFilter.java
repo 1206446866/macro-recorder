@@ -24,6 +24,7 @@ public final class RecordingControlInputFilter {
     private final ArrayDeque<RegionAt> regions = new ArrayDeque<>();
     private final ArrayDeque<Interval> suspensions = new ArrayDeque<>();
     private final Set<Integer> ignoredMouseButtons = new HashSet<>();
+    private final Set<Integer> forcedMouseReleases = new HashSet<>();
     private final Set<Integer> ignoredKeys = new HashSet<>();
     private long startedAt;
     private long suspendedAt = -1;
@@ -48,6 +49,7 @@ public final class RecordingControlInputFilter {
     public synchronized void reset() {
         suspensions.clear();
         ignoredMouseButtons.clear();
+        forcedMouseReleases.clear();
         ignoredKeys.clear();
         suspendedAt = -1;
         startedAt = ticks.getAsLong();
@@ -87,14 +89,19 @@ public final class RecordingControlInputFilter {
 
     /** 判断鼠标按下是否来自控件或挂起区间，被忽略的按钮持续过滤到释放。 */
     public synchronized boolean ignoreMousePress(NativeMouseEvent event) {
-        boolean ignore = ignoredMouseButtons.contains(event.getButton())
-                || blocked(event.getWhen()) || inControlRegion(event.getWhen(), region -> region.contains(event));
+        boolean blocked = blocked(event.getWhen()) || inControlRegion(event.getWhen(), region -> region.contains(event));
+        if (!blocked && forcedMouseReleases.remove(event.getButton())) ignoredMouseButtons.remove(event.getButton());
+        boolean ignore = ignoredMouseButtons.contains(event.getButton()) || blocked;
         if (ignore) ignoredMouseButtons.add(event.getButton());
         return ignore;
     }
 
     /** 清理被抑制按钮；已经录入按下的动作优先保留配对释放，避免生成无法松开的宏。 */
     public synchronized boolean ignoreMouseRelease(NativeMouseEvent event, boolean recordedPress) {
+        if (forcedMouseReleases.contains(event.getButton())) {
+            ignoredMouseButtons.remove(event.getButton());
+            return true;
+        }
         if (ignoredMouseButtons.remove(event.getButton())) return true;
         // 在外部按下、在控制栏上松开时，保留已录入按下动作的配对释放。
         if (recordedPress) return false;
@@ -125,6 +132,11 @@ public final class RecordingControlInputFilter {
 
     /** 将指定鼠标按钮加入抑制集合，直到收到对应释放事件。 */
     public synchronized void suppressMouseUntilRelease(int button) { ignoredMouseButtons.add(button); }
+    /** 自动松开后持续忽略重复释放；有效的新按下才重新建立配对，不阻止鼠标移动。 */
+    public synchronized void suppressMouseUntilNextPress(int button) {
+        forcedMouseReleases.add(button);
+        ignoredMouseButtons.remove(button);
+    }
     /** 将指定键标识加入抑制集合，直到收到对应释放事件。 */
     public synchronized void suppressKeyUntilRelease(int key) { ignoredKeys.add(key); }
 

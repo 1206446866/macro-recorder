@@ -25,6 +25,7 @@ public final class ScreenSelectionOverlay extends JDialog {
     private final Runnable onCanceled;
     private final Consumer<Throwable> onFailed;
     private final SelectionCanvas canvas;
+    private final Rectangle selectionLimit;
     private final KeyEventDispatcher keyEventDispatcher =
             this::dispatchCaptureKeyEvent;
 
@@ -41,6 +42,12 @@ public final class ScreenSelectionOverlay extends JDialog {
             Runnable onCanceled,
             Consumer<Throwable> onFailed
     ) {
+        this(owner, screenImage, screenBounds, configuration, onConfirmed, onCanceled, onFailed, null);
+    }
+
+    public ScreenSelectionOverlay(Window owner, BufferedImage screenImage, Rectangle screenBounds,
+            GraphicsConfiguration configuration, Consumer<BufferedImage> onConfirmed,
+            Runnable onCanceled, Consumer<Throwable> onFailed, Rectangle selectableBoundsOnScreen) {
         super(
                 Objects.requireNonNull(owner, "所属窗口不能为空"),
                 "",
@@ -54,6 +61,12 @@ public final class ScreenSelectionOverlay extends JDialog {
         this.onConfirmed = Objects.requireNonNull(onConfirmed, "完成回调不能为空");
         this.onCanceled = Objects.requireNonNull(onCanceled, "取消回调不能为空");
         this.onFailed = Objects.requireNonNull(onFailed, "异常回调不能为空");
+        if (selectableBoundsOnScreen == null) selectionLimit = null;
+        else {
+            selectionLimit = bounds.intersection(selectableBoundsOnScreen);
+            if (selectionLimit.isEmpty()) throw new IllegalArgumentException("窗口选区不在截图屏幕内");
+            selectionLimit.translate(-bounds.x, -bounds.y);
+        }
 
         canvas = new SelectionCanvas();
         setUndecorated(true);
@@ -95,6 +108,14 @@ public final class ScreenSelectionOverlay extends JDialog {
         if (isDisplayable()) {
             dispose();
         }
+    }
+
+    /** 返回选区的全局逻辑坐标；与裁剪图像一起作为本次录制的位置提示。 */
+    public Rectangle getSelectionBoundsOnScreen() {
+        if (!canvas.hasValidSelection()) return null;
+        Rectangle bounds = new Rectangle(canvas.selection);
+        bounds.translate(getX(), getY());
+        return bounds;
     }
 
     /** 安装取消和完成快捷键。 */
@@ -250,6 +271,15 @@ public final class ScreenSelectionOverlay extends JDialog {
 
             drawScreenImage(g2);
             drawDarkMask(g2);
+            if (selectionLimit != null) {
+                Shape previousClip = g2.getClip();
+                g2.clip(selectionLimit); drawScreenImage(g2);
+                g2.setColor(new Color(0, 0, 0, 35)); g2.fill(selectionLimit);
+                g2.setClip(previousClip);
+                g2.setColor(theme.accent());
+                g2.setStroke(new BasicStroke(2f));
+                g2.drawRect(selectionLimit.x, selectionLimit.y, selectionLimit.width - 1, selectionLimit.height - 1);
+            }
             drawUsageHint(g2);
 
             if (hasValidSelection()) {
@@ -281,7 +311,8 @@ public final class ScreenSelectionOverlay extends JDialog {
 
         /** 绘制操作提示。 */
         private void drawUsageHint(Graphics2D graphics) {
-            String hint = "拖动鼠标选择区域 · 双击或 Enter 完成 · Esc 或右键取消";
+            String hint = selectionLimit == null ? "拖动鼠标选择区域 · 双击或 Enter 完成 · Esc 或右键取消"
+                    : "仅高亮窗口内容区可选（当前屏幕可见部分）· Enter 完成 · Esc 或右键取消";
             graphics.setFont(getFont().deriveFont(Font.PLAIN, 13f));
             FontMetrics metrics = graphics.getFontMetrics();
             int horizontalPadding = 14;
@@ -459,7 +490,8 @@ public final class ScreenSelectionOverlay extends JDialog {
         private boolean hasValidSelection() {
             return selection != null
                     && selection.width >= MINIMUM_SELECTION_SIZE
-                    && selection.height >= MINIMUM_SELECTION_SIZE;
+                    && selection.height >= MINIMUM_SELECTION_SIZE
+                    && allowedBounds().contains(selection);
         }
 
         /** 根据选区位置显示操作按钮，确保按钮不会超出屏幕。 */
@@ -488,16 +520,22 @@ public final class ScreenSelectionOverlay extends JDialog {
 
         /** 将拖动端点转换为窗口范围内的规范矩形。 */
         private Rectangle createSelection(Point start, Point end) {
-            int startX = clamp(start.x, 0, getWidth());
-            int startY = clamp(start.y, 0, getHeight());
-            int endX = clamp(end.x, 0, getWidth());
-            int endY = clamp(end.y, 0, getHeight());
+            Rectangle allowed = allowedBounds();
+            int startX = clamp(start.x, allowed.x, allowed.x + allowed.width);
+            int startY = clamp(start.y, allowed.y, allowed.y + allowed.height);
+            int endX = clamp(end.x, allowed.x, allowed.x + allowed.width);
+            int endY = clamp(end.y, allowed.y, allowed.y + allowed.height);
             return new Rectangle(
                     Math.min(startX, endX),
                     Math.min(startY, endY),
                     Math.abs(endX - startX),
                     Math.abs(endY - startY)
             );
+        }
+
+        private Rectangle allowedBounds() {
+            Rectangle bounds = new Rectangle(0, 0, getWidth(), getHeight());
+            return selectionLimit == null ? bounds : bounds.intersection(selectionLimit);
         }
 
         /** 选区鼠标交互。 */
@@ -513,6 +551,7 @@ public final class ScreenSelectionOverlay extends JDialog {
                 if (!SwingUtilities.isLeftMouseButton(event)) {
                     return;
                 }
+                if (!allowedBounds().contains(event.getPoint())) return;
                 if (event.getClickCount() >= 2
                         && hasValidSelection()
                         && selection.contains(event.getPoint())) {
@@ -538,6 +577,11 @@ public final class ScreenSelectionOverlay extends JDialog {
                 }
                 selection = createSelection(dragStart, event.getPoint());
                 repaint();
+            }
+
+            @Override public void mouseMoved(MouseEvent event) {
+                setCursor(Cursor.getPredefinedCursor(allowedBounds().contains(event.getPoint())
+                        ? Cursor.CROSSHAIR_CURSOR : Cursor.DEFAULT_CURSOR));
             }
 
             /** 结束本次框选，确定选区并更新确认工具栏位置。 */

@@ -141,8 +141,8 @@ public final class MacroFlowFactory {
             String currentId, String nextId, String endId, long retryDelay, MacroBranch previous) {
         return new MacroBranch(condition, switch (behavior) {
             case RETRY -> currentId;
-            case EXECUTE -> nextId;
-            case TERMINATE -> endId;
+            case EXECUTE, CLICK_EXECUTE -> nextId;
+            case TERMINATE, CLICK_TERMINATE -> endId;
             case JUMP -> previous == null ? null : previous.getTargetId();
         }, behavior == ImageCheckBehavior.RETRY ? retryDelay
                 : behavior == ImageCheckBehavior.JUMP && previous != null ? previous.getDelay() : 0L);
@@ -170,6 +170,7 @@ public final class MacroFlowFactory {
                 for (BranchCondition result : List.of(BranchCondition.FOUND, BranchCondition.NOT_FOUND)) {
                     ImageCheckBehavior behavior = result == BranchCondition.FOUND
                             ? node.getImageCheckConfig().getSuccessBehavior() : node.getImageCheckConfig().getFailureBehavior();
+                    behavior = behavior.flowBehavior();
                     if (behavior == ImageCheckBehavior.RETRY || behavior == ImageCheckBehavior.TERMINATE) {
                         // 明确配置的重试是允许的用户循环，不添加次数限制。
                         exits.add(node.getId());

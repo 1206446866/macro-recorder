@@ -116,6 +116,7 @@ public final class ImageRecognitionDiagnostics {
             }
             log(source, "CAPTURE_SAVED", "Request: " + requestId + "\nDirectory: " + directory);
         } catch (Exception | LinkageError exception) {
+            com.macro.diagnostics.ErrorReporter.report("保存图像识别诊断失败，Request=" + requestId, exception);
             System.err.println("[图像识别诊断][" + source + "][CAPTURE_SAVE_ERROR] Request: "
                     + requestId + "，保存诊断图像失败：" + exception);
         }

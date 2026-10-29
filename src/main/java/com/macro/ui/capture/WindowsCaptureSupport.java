@@ -64,11 +64,13 @@ public final class WindowsCaptureSupport {
             try (Memory value = new Memory(4)) {
                 if (!User32.INSTANCE.IsWindow(saved)) return;
                 value.setInt(0, original);
-                if (Dwm.INSTANCE.DwmSetWindowAttribute(saved, DWMWA_CLOAK, value, 4) < 0) {
-                    System.err.println("截图结束后恢复窗口遮蔽状态失败");
+                int result = Dwm.INSTANCE.DwmSetWindowAttribute(saved, DWMWA_CLOAK, value, 4);
+                if (result < 0) {
+                    com.macro.diagnostics.ErrorReporter.report("截图结束后恢复窗口遮蔽状态失败，HRESULT=0x"
+                            + Integer.toHexString(result), null);
                 }
             } catch (RuntimeException | LinkageError failure) {
-                System.err.println("截图结束后恢复窗口遮蔽状态失败：" + failure.getMessage());
+                com.macro.diagnostics.ErrorReporter.report("截图结束后恢复窗口遮蔽状态失败", failure);
             }
         }
     }
