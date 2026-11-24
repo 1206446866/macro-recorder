@@ -3,14 +3,14 @@
     "path": "licenses/tess4j-LICENSE.txt",
     "bytes": 11523,
     "sha256": "de556eb1415648cc1bba68d1e602d8a54e3e5b3592770df34d863449e8f0303c",
-    "source": "https://raw.githubusercontent.com/nguyenq/tess4j/7a585050d1e30f1f1ceb60d9132f2440f527f51f/LICENSE",
+    "source": "https://raw.githubusercontent.com/nguyenq/tess4j/6d4179d3b0553a2572d97806282f91bdaf8fc2dd/LICENSE",
     "gitBlob": "abd540fd6942248915c74dcc8e1b0da0257e55b5"
   },
   {
     "path": "licenses/lept4j-LICENSE.txt",
     "bytes": 11560,
     "sha256": "2e54cd84a645bea25943c75dd8ae67cb291e66a47a11578333c9b4b3b6b86c85",
-    "source": "https://raw.githubusercontent.com/nguyenq/lept4j/cec7e267a427b9226451a5ed8232be8badd6dac2/LICENSE",
+    "source": "https://raw.githubusercontent.com/nguyenq/lept4j/0f5174c9c74fdbc7d092ceafa958cfc68fd0bac8/LICENSE",
     "gitBlob": "113e84387d76083ddd734bcfeb75f87c848d172b"
   },
   {
@@ -59,14 +59,14 @@
     "path": "licenses/tesseract-LICENSE.txt",
     "bytes": 11358,
     "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
-    "source": "https://raw.githubusercontent.com/tesseract-ocr/tesseract/5.5.3/LICENSE",
+    "source": "https://raw.githubusercontent.com/tesseract-ocr/tesseract/5.3.4/LICENSE",
     "gitBlob": "d645695673349e3947e8e5ae42332d0ac3164cd7"
   },
   {
     "path": "licenses/leptonica-LICENSE.txt",
     "bytes": 1521,
     "sha256": "87829abb5bbb00b55a107365da89e9a33f86c4250169e5a1e5588505be7d5806",
-    "source": "https://raw.githubusercontent.com/DanBloomberg/leptonica/1.87.0/leptonica-license.txt",
+    "source": "https://raw.githubusercontent.com/DanBloomberg/leptonica/1.84.1/leptonica-license.txt",
     "gitBlob": "73d44c601c0746534128804c3fb0b93772897f82"
   },
   {
@@ -82,5 +82,19 @@
     "sha256": "0b2cb584baeb38b90033344b4d70830b33ba01396fb9142b9b733e83c8a73fb8",
     "source": "https://raw.githubusercontent.com/nguyenq/lept4j/0f5174c9c74fdbc7d092ceafa958cfc68fd0bac8/src/main/resources/win32-x86-64/libleptonica1841.dll",
     "gitBlob": "a1ee431e55cb74dd2762c553c2d826d3056a3292"
+  },
+  {
+    "path": "licenses/libpng-LICENSE.txt",
+    "bytes": 5345,
+    "sha256": "5c0bb4b05b1354ae7c173532b6702ea68b611047ff9b91c4d3af77da39c195d9",
+    "source": "https://raw.githubusercontent.com/pnggroup/libpng/v1.6.40/LICENSE",
+    "gitBlob": "086d1c2fda63bf2c97c5ad7d7a3bbe1e2b7bff6b"
+  },
+  {
+    "path": "licenses/libtiff-LICENSE.md",
+    "bytes": 1164,
+    "sha256": "0780558a8bfba0af1160ec1ff11ade4f41c0d7deafd6ecfc796b492a788e380d",
+    "source": "https://gitlab.com/libtiff/libtiff/-/raw/v4.6.0/LICENSE.md",
+    "gitBlob": "55b65673edf0d55ee6aba1afadb84f92794a0786"
   }
 ]
