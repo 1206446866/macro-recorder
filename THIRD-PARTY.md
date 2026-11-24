@@ -6,7 +6,7 @@ Macro Recorder 的项目授权说明见 [README](README.md#项目素材与授权
 
 | 组件 | 来源及许可 |
 | --- | --- |
-| OCR Windows DLL、语言模型及声明 | Tesseract、Leptonica、Tess4J、Lept4J、tessdata_fast，以及确认的 libpng、LibTIFF。具体版本、来源、原文及待核实依赖见 [OCR 第三方声明](src/main/resources/ocr/THIRD-PARTY.md) 和 [资源清单](src/main/resources/ocr/manifest.json)。完整原生组件声明仍待核实，见 OCR 第三方声明。 |
+| OCR Windows DLL、语言模型及声明 | Tesseract、Leptonica、Tess4J、Lept4J、tessdata_fast，以及 Leptonica 报告的 GIFLIB、IJG libjpeg、libpng、LibTIFF、zlib、libwebp 和 OpenJPEG。具体版本、来源、许可原文与待核实项见 [OCR 第三方声明](src/main/resources/ocr/THIRD-PARTY.md) 和 [资源清单](src/main/resources/ocr/manifest.json)。 |
 | Inno Setup 简体中文语言文件 | 随仓库保留原作者署名、[许可正文](scripts/installer/INNO-LICENSE.txt) 及 [来源说明](scripts/installer/README.md)。 |
 | Maven Wrapper 3.3.4 | 本仓库提供启动脚本并保留上游许可页眉、[LICENSE](.mvn/wrapper/LICENSE) 和 [NOTICE](.mvn/wrapper/NOTICE)。Maven 分发由 Wrapper 按配置下载。 |
 

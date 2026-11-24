@@ -91,10 +91,63 @@
     "gitBlob": "086d1c2fda63bf2c97c5ad7d7a3bbe1e2b7bff6b"
   },
   {
-    "path": "licenses/libtiff-LICENSE.md",
+    "path": "licenses/libtiff-LICENSE.txt",
     "bytes": 1164,
     "sha256": "0780558a8bfba0af1160ec1ff11ade4f41c0d7deafd6ecfc796b492a788e380d",
     "source": "https://gitlab.com/libtiff/libtiff/-/raw/v4.6.0/LICENSE.md",
     "gitBlob": "55b65673edf0d55ee6aba1afadb84f92794a0786"
+  },
+  {
+    "path": "licenses/giflib-LICENSE.txt",
+    "bytes": 1088,
+    "sha256": "0c9b7990ecdca88b676db232c226548ac408b279f550d424d996f0d83591dd8e",
+    "source": "https://deb.debian.org/debian/pool/main/g/giflib/giflib_5.2.1.orig.tar.gz",
+    "gitBlob": "b9c0b50126076f30f0f9db7e940eac64e60febd6",
+    "sourceMember": "giflib-5.2.1/COPYING"
+  },
+  {
+    "path": "licenses/giflib-reallocarray-NOTICE.txt",
+    "bytes": 92,
+    "sha256": "0fe7f9409aad26b46f72890dd54b2d02a50f966489844b1355dea49765589846",
+    "source": "https://deb.debian.org/debian/pool/main/g/giflib/giflib_5.2.1.orig.tar.gz",
+    "gitBlob": "9eda3f5aca97097e038e71ee6f4d611bb0486939",
+    "sourceMember": "giflib-5.2.1/openbsd-reallocarray.c",
+    "sourceLines": "1-4"
+  },
+  {
+    "path": "licenses/libjpeg-README.txt",
+    "bytes": 18724,
+    "sha256": "50c1c5978d490c7f13062d91c4b89affc83774f87bc4568a714f748b62a5b216",
+    "source": "https://www.ijg.org/files/jpegsrc.v9e.tar.gz",
+    "gitBlob": "d288f41b80af395df4834b2d4ab3afed667ecc79",
+    "sourceMember": "jpeg-9e/README"
+  },
+  {
+    "path": "licenses/zlib-LICENSE.txt",
+    "bytes": 1002,
+    "sha256": "845efc77857d485d91fb3e0b884aaa929368c717ae8186b66fe1ed2495753243",
+    "source": "https://raw.githubusercontent.com/madler/zlib/v1.3/LICENSE",
+    "gitBlob": "ab8ee6f71428c3e4646b12b64ad387cde33462e5"
+  },
+  {
+    "path": "licenses/libwebp-LICENSE.txt",
+    "bytes": 1496,
+    "sha256": "5aec868f669e384a22372a4e8a1a6cd7d44c64cd451f960ca69cc170d1e13acf",
+    "source": "https://raw.githubusercontent.com/webmproject/libwebp/v1.3.2/COPYING",
+    "gitBlob": "7a6f99547d4d6b4c5e6d5321acfaeba313e08de3"
+  },
+  {
+    "path": "licenses/libwebp-PATENTS.txt",
+    "bytes": 1436,
+    "sha256": "cc3273e0694ea5896145e0677699b53471b03ea43021ddc50e7923fbb9f5023c",
+    "source": "https://raw.githubusercontent.com/webmproject/libwebp/v1.3.2/PATENTS",
+    "gitBlob": "caedf607e95ae4c3dc84d057fddcc301cd0e4863"
+  },
+  {
+    "path": "licenses/openjpeg-LICENSE.txt",
+    "bytes": 2112,
+    "sha256": "a6af136f3e15038a666b61f376612a07d9a4e48cb7c01adbf3e33b3f14ab49b6",
+    "source": "https://raw.githubusercontent.com/uclouvain/openjpeg/v2.5.0/LICENSE",
+    "gitBlob": "e8fa41040dfbe8be524cac5b1bb19d60c6eb0320"
   }
 ]
