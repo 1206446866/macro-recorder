@@ -4,6 +4,9 @@
 # ==============================
 **/target/
 
+# Windows OCR libraries are resolved into target/ by Maven.
+/src/main/resources/ocr/native/
+
 # ==============================
 # Windows 打包产物
 # ==============================

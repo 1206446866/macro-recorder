@@ -1,12 +1,12 @@
 # Offline OCR components
 
-This directory includes unmodified upstream Windows x64 binaries and language data:
+The OCR runtime uses unmodified upstream Windows x64 binaries and language data:
 
 - Tesseract 5.3.4 (`libtesseract534.dll`), from [Tess4J 5.11.0](https://github.com/nguyenq/tess4j/releases/tag/tess4j-5.11.0), Apache License 2.0.
 - Leptonica 1.84.1 (`libleptonica1841.dll`), from the rebuilt Windows binaries in [Lept4J 1.19.1](https://github.com/nguyenq/lept4j/releases/tag/lept4j-1.19.1), Leptonica BSD license. The distribution project also provides its Apache License 2.0.
 - `tessdata_fast` models: simplified Chinese, traditional Chinese, English, Japanese and Korean, Apache License 2.0.
 
-See `licenses/` for the bundled license texts and `manifest.json` for exact pinned sources, byte sizes, SHA-256 checksums and Git blob identities. A `sourceMember` identifies the original file inside a source archive. A `sourceLines` range identifies an excerpt containing the original attribution. The application calls the native C interface through JNA and bundles the DLLs from Tess4J and Lept4J.
+See `licenses/` for the license texts and `manifest.json` for pinned sources, byte sizes, SHA-256 checksums and Git blob content identities. A `sourceMember` identifies the original file inside a source archive. A `sourceLines` range identifies an excerpt containing the original attribution. Maven resolves the two upstream JARs, verifies their digests, and places only the verified DLLs in the application JAR. The application's JNA calls and offline runtime use the same native interface.
 
 ## Components in the Leptonica Windows binary
 

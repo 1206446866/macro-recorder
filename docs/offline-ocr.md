@@ -10,7 +10,11 @@
 
 目前支持 Windows x64，复用现有 JNA，直接调用 Tesseract 5.3.4 和 Leptonica 1.84.1 的本机接口，未引入完整 Tess4J、PDF 或其他平台依赖。五种 `tessdata_fast` 模型随程序一起提供，运行时无联网下载。
 
-资源保存在 `src/main/resources/ocr/`，分发后在应用 JAR 中；首次使用按清单校验后展开到**程序目录的 `ocr-cache/runtime-<清单指纹>/`**。本项目开发与测试的模型、本机库和隔离缓存都位于 D 盘；程序移动到其他磁盘后，默认缓存跟随程序目录。它不使用系统临时目录作为 OCR 默认缓存。开发诊断可用 `-Dmacro.ocr.cacheDirectory=<目录>` 指定缓存位置。
+### 构建与运行资源
+
+语言模型、许可和清单位于 `src/main/resources/ocr/`。Maven 在 `generate-resources` 阶段从固定版本的 Tess4J、Lept4J JAR 提取两个 Windows x64 DLL，分别校验上游 JAR 与 DLL 的 SHA-256，再将通过校验的 DLL 写入 `target/classes/ocr/native/`。`compile`、`test` 和 `package` 均会执行这一步。Maven 缓存包含这些依赖后，可使用 `-o` 离线构建。
+
+应用 JAR 包含运行所需的 OCR 资源。首次使用时，应用按清单校验并展开资源到**程序目录的 `ocr-cache/runtime-<清单指纹>/`**。程序移到其他磁盘后，默认缓存随程序目录移动。开发诊断可用 `-Dmacro.ocr.cacheDirectory=<目录>` 指定缓存位置。
 
 缓存复用前核对大小与 SHA-256，损坏或不完整缓存会保留，改用同一父目录下的新目录，不覆盖原文件。程序目录需有写权限；模型路径还需可由 Windows 当前系统代码页或可用的短路径表示。当前仅打包已验证的 Windows x64 本机组件，其他平台明确报不支持。
 
@@ -24,7 +28,7 @@
 
 ## 来源与许可
 
-各文件的固定来源、大小、SHA-256 与 Git blob 记录在 [`manifest.json`](../src/main/resources/ocr/manifest.json)，分发包含 [`licenses/`](../src/main/resources/ocr/licenses/) 下的许可正文。
+各文件的固定来源、大小、SHA-256 与 Git blob 内容标识记录在 [`manifest.json`](../src/main/resources/ocr/manifest.json)。DLL 的 Git blob 标识用于核对上游内容。应用 JAR 包含 [`licenses/`](../src/main/resources/ocr/licenses/) 下的许可正文，公开分发二进制前仍需核对 [第三方许可说明](../THIRD-PARTY.md#zip-与-exe-分发)。
 
 | 内容 | 来源 | 许可 |
 |---|---|---|

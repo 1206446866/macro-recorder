@@ -62,6 +62,8 @@ mvn -q -DskipTests package
 
 打包生成 `target/recorder-<Maven版本>.jar` 和 `target/lib/` 依赖目录。该 JAR 不是包含全部依赖的单文件发行包。
 
+Maven 在生成资源时获取两个固定版本的 OCR DLL，校验上游 JAR 与提取的 DLL 后，将它们放入应用资源。首次构建需要联网或预先缓存相应依赖。通过 IDE 启动前先执行 Maven `compile`，确保已生成这些资源。构建完成后的文字提取可离线运行。详见 [离线 OCR](docs/offline-ocr.md#构建与运行资源)。
+
 ### 从源码启动
 
 完成 `package` 后：

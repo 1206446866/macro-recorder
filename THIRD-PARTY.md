@@ -6,7 +6,7 @@ Macro Recorder 的项目授权说明见 [README](README.md#项目素材与授权
 
 | 组件 | 来源及许可 |
 | --- | --- |
-| OCR Windows DLL、语言模型及声明 | Tesseract、Leptonica、Tess4J、Lept4J、tessdata_fast，以及 Leptonica 报告的 GIFLIB、IJG libjpeg、libpng、LibTIFF、zlib、libwebp 和 OpenJPEG。具体版本、来源、许可原文与待核实项见 [OCR 第三方声明](src/main/resources/ocr/THIRD-PARTY.md) 和 [资源清单](src/main/resources/ocr/manifest.json)。 |
+| OCR 语言模型及声明 | `tessdata_fast` 模型、OCR DLL 来源和许可原文随源码提供。版本及内容指纹见 [OCR 第三方声明](src/main/resources/ocr/THIRD-PARTY.md) 和 [资源清单](src/main/resources/ocr/manifest.json)。 |
 | Inno Setup 简体中文语言文件 | 随仓库保留原作者署名、[许可正文](scripts/installer/INNO-LICENSE.txt) 及 [来源说明](scripts/installer/README.md)。 |
 | Maven Wrapper 3.3.4 | 本仓库提供启动脚本并保留上游许可页眉、[LICENSE](.mvn/wrapper/LICENSE) 和 [NOTICE](.mvn/wrapper/NOTICE)。Maven 分发由 Wrapper 按配置下载。 |
 
@@ -22,9 +22,12 @@ Macro Recorder 的项目授权说明见 [README](README.md#项目素材与授权
 | Jackson Databind 2.22.4；`jackson-core` 2.22.4、`jackson-annotations` 2.22 | JSON，Apache License 2.0。 |
 | FlatLaf 3.7.2 | 应用界面，Apache License 2.0。 |
 | OpenPnP OpenCV 4.9.0-0 | Java 包装的发行元数据列 BSD；[OpenCV 4.9.0](https://opencv.org/license/) 本体采用 Apache License 2.0。原生库内随附组件按各自声明处理。 |
+| Tess4J 5.11.0、Lept4J 1.19.1 | Maven 构建时仅提取经 SHA-256 校验的 Tesseract 5.3.4 和 Leptonica 1.84.1 DLL。上游 Java 包作为构建输入。Leptonica 的编解码组件声明见 [OCR 第三方声明](src/main/resources/ocr/THIRD-PARTY.md)。 |
 | Lombok 1.18.34 | 编译期代码生成，MIT。 |
 | JUnit Jupiter 5.10.5、JUnit Platform 1.10.5 | 测试依赖，Eclipse Public License 2.0。传递测试依赖 OpenTest4J 1.3.0、API Guardian 1.1.2 采用 Apache License 2.0。 |
 
 ## ZIP 与 EXE 分发
 
 打包脚本将运行依赖、OpenCV 原生库及裁剪后的 Java 运行时放入应用包。分发前应核对实际打包内容，提供所需的版权、许可与 NOTICE，核实 JNativeHook 的原生和 Java 组件分别适用的许可及随附源代码或替换机制义务，以及 OpenCV 原生依赖的声明。Java 运行时按实际 JDK 供应商和版本核查再分发条件，保留该运行时要求的法律声明。安装包同时保留 Inno Setup 相关声明。
+
+应用 JAR 包含构建时获取的 OCR DLL。公开分发含该 JAR 的 ZIP、EXE 或独立应用 JAR 前，应完成 OCR DLL 内嵌依赖和所需声明的核对。
