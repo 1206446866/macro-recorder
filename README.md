@@ -4,7 +4,7 @@ Macro Recorder 是一款 Windows 键鼠宏工具，支持录制和循环播放�
 
 [构建与启动](#构建与启动) · [基本使用](#基本使用) · [开发验证](#开发验证) · [已知限制](#当前已知限制) · [第三方许可](THIRD-PARTY.md)
 
-当前软件版本为 **1.2.0**，以 [`ApplicationInfo.APP_VERSION`](src/main/java/com/macro/constant/ApplicationInfo.java) 为准，由维护者决定升级；[`pom.xml`](pom.xml) 的 Maven 数字版本与其同步，数字版本一致时保留已有后缀。`.mr` 文件格式版本由 `MacroFormat` 独立维护，不随软件版本变更。近期变化见 [更新日志](CHANGELOG.md)，项目状态和文档入口见 [项目状态索引](docs/README.md)。
+当前软件版本为 **1.2.0**，以 [`ApplicationInfo.APP_VERSION`](src/main/java/com/macro/constant/ApplicationInfo.java) 为准；[`pom.xml`](pom.xml) 的 Maven 数字版本与其同步，数字版本一致时保留已有后缀。`.mr` 文件格式版本由 `MacroFormat` 独立维护，不随软件版本变更。近期变化见 [更新日志](CHANGELOG.md)，项目状态和文档入口见 [项目状态索引](docs/README.md)。
 
 ## 主要功能
 
@@ -358,8 +358,3 @@ mvn test '-Djava.awt.headless=true'
 
 仓库保留当前源码和正式资源，不包含旧源码压缩包、个人运行数据或 Windows 打包产物。
 
-## 项目素材与授权
-
-应用图标 `MacroRecorder.ico` 和 `src/main/resources/MacroRecorder.png` 由 ChatGPT 为本项目生成。
-
-Macro Recorder 原创内容的著作权由著作权人保留。项目源码供查阅与学习。除适用法律及 GitHub 平台条款允许的行为外，复制、修改、再分发或将项目原创代码用于商业用途，均须事先取得著作权人授权。第三方组件及素材继续适用各自的许可证，详见 [第三方许可说明](THIRD-PARTY.md)。
